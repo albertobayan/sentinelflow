@@ -47,6 +47,26 @@ Start SentinelFlow:
 ```bash
 python -m sentinelflow.main
 
+Example:
+
+SentinelFlow v0.1
+Type 'exit' to quit.
+
+Enter IOC:
+> 8.8.8.8
+
+IOC analysis
+────────────────────
+Value: 8.8.8.8
+Type: IPv4
+Valid: True
+Source: manual
+────────────────────
+
+Run tests:
+
+pytest
+
 ## Disclaimer
 
 SentinelFlow is intended exclusively for defensive security research, SOC training, controlled laboratory environments, owned infrastructure and explicitly authorized systems.
