@@ -28,7 +28,7 @@ Current milestone:
 
 ### v0.1 — IOC Detection Engine
 
-SentinelFlow can currently identify and validate:
+SentinelFlow currently identifies and validates:
 
 - IPv4
 - IPv6
@@ -38,7 +38,14 @@ SentinelFlow can currently identify and validate:
 - SHA1 hashes
 - SHA256 hashes
 
-The project includes automated tests using pytest.
+The IOC engine includes automated testing with pytest and handles invalid or malformed input.
+
+## Usage
+
+Start SentinelFlow:
+
+```bash
+python -m sentinelflow.main
 
 ## Disclaimer
 
