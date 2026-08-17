@@ -40,6 +40,54 @@ SentinelFlow currently identifies and validates:
 
 The IOC engine includes automated testing with pytest and handles invalid or malformed input.
 
+## Nginx Log Watcher
+
+SentinelFlow can monitor an Nginx access log incrementally and process newly appended events without re-reading previously processed lines.
+
+Run the watcher:
+
+```bash
+python -m sentinelflow.watch
+
+Current pipeline:
+
+Nginx Log
+    ↓
+LogWatcher
+    ↓
+Nginx Parser
+    ↓
+SecurityEvent
+    ↓
+IOC Detection
+    ↓
+Structured Output
+
+The watcher:
+
+tracks its current position in the log file;
+processes only newly appended lines;
+ignores malformed Nginx lines;
+supports a configurable polling interval;
+validates invalid polling intervals;
+extracts the source IP as an IOC;
+can be stopped cleanly with Ctrl+C.
+
+Example:
+
+New security event
+────────────────────
+Timestamp: 15/Aug/2026:01:34:21 +0200
+Source IP: 185.123.45.20
+Method: GET
+Path: /admin
+Status: 401
+User-Agent: Mozilla/5.0
+IOC Type: IPv4
+IOC Valid: True
+Source: nginx
+────────────────────
+
 ## Usage
 
 Start SentinelFlow:
