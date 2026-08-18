@@ -561,6 +561,118 @@ Tests currently cover areas including:
 
 ---
 
+## IP Classification and Enrichment Policy
+
+SentinelFlow classifies IP addresses before they are considered for external Threat Intelligence enrichment.
+
+Supported IP categories include:
+
+- `PUBLIC`
+- `PRIVATE`
+- `LOOPBACK`
+- `LINK_LOCAL`
+- `RESERVED`
+- `MULTICAST`
+- `UNSPECIFIED`
+
+Example:
+
+```python
+classification = classify_ip("8.8.8.8")
+
+print(classification.category)
+print(classification.is_public)
+```
+
+Result:
+
+```text
+IPCategory.PUBLIC
+True
+```
+
+Private and special-use addresses are identified separately:
+
+```text
+192.168.1.10  → PRIVATE
+127.0.0.1     → LOOPBACK
+169.254.1.10  → LINK_LOCAL
+224.0.0.1     → MULTICAST
+240.0.0.1     → RESERVED
+0.0.0.0       → UNSPECIFIED
+```
+
+### IP Allowlist
+
+SentinelFlow also supports an IP allowlist.
+
+The allowlist represents local policy and known addresses that should not automatically continue to external enrichment.
+
+Being allowlisted does not mean that an IP is universally safe or trusted. It only means that SentinelFlow applies a local policy decision to that address.
+
+Example:
+
+```python
+is_ip_allowlisted("8.8.8.8")
+```
+
+### Enrichment Policy
+
+SentinelFlow combines IP classification and allowlisting to decide whether an IP should be considered for external Threat Intelligence enrichment.
+
+Current policy:
+
+```text
+IP
+│
+▼
+Classification
+│
+├── NOT PUBLIC
+│      ↓
+│   Do not enrich
+│
+└── PUBLIC
+       │
+       ▼
+   Allowlist Check
+       │
+       ├── Allowlisted
+       │      ↓
+       │   Do not enrich
+       │
+       └── Not Allowlisted
+              ↓
+         Enrichment Candidate
+```
+
+Examples:
+
+```text
+9.9.9.9
+├── Valid IPv4
+├── PUBLIC
+├── Not allowlisted
+└── should_enrich = True
+```
+
+```text
+192.168.1.20
+├── Valid IPv4
+├── PRIVATE
+└── should_enrich = False
+```
+
+```text
+8.8.8.8
+├── Valid IPv4
+├── PUBLIC
+├── Allowlisted
+└── should_enrich = False
+```
+
+A `False` enrichment decision does not mean that an IP is safe. It only means that, according to the current SentinelFlow policy, the address should not be sent to an external Threat Intelligence enrichment stage.
+
 ## Development Philosophy
 
 SentinelFlow is developed incrementally using the following workflow:
