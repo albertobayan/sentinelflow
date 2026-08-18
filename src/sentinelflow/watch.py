@@ -21,10 +21,14 @@ def display_event(event: SecurityEvent) -> None:
 
 
 def main() -> None:
-    watcher = LogWatcher("logs/sample_access.log")
+    watcher = LogWatcher(
+        "logs/sample_access.log",
+        start_at_end=True,
+    )
 
     print("SentinelFlow Log Watcher")
     print("Watching: logs/sample_access.log")
+    print("Waiting for new events...")
     print("Press Ctrl+C to stop.\n")
 
     try:

@@ -6,9 +6,42 @@ from sentinelflow.models.security_event import SecurityEvent
 
 
 class LogWatcher:
-    def __init__(self, file_path: str) -> None:
+    def __init__(
+        self,
+        file_path: str,
+        start_at_end: bool = False,
+    ) -> None:
         self.path = Path(file_path)
         self.position = 0
+        self.file_id: tuple[int, int] | None = None
+        self.start_at_end = start_at_end
+        self.initialized = False
+        
+    def _get_file_id(self) -> tuple[int, int]:
+        stat = self.path.stat()
+
+        return stat.st_dev, stat.st_ino
+    
+    def _refresh_file_state(self) -> None:
+        current_file_id = self._get_file_id()
+        current_size = self.path.stat().st_size
+
+        if not self.initialized:
+            self.file_id = current_file_id
+
+            if self.start_at_end:
+                self.position = current_size
+
+            self.initialized = True
+            return
+
+        if current_file_id != self.file_id:
+            self.position = 0
+            self.file_id = current_file_id
+            return
+
+        if current_size < self.position:
+            self.position = 0
 
     def read_new_lines(self) -> list[str]:
         if not self.path.exists():
@@ -20,6 +53,8 @@ class LogWatcher:
             raise ValueError(
                 f"Path is not a file: {self.path}"
             )
+
+        self._refresh_file_state()
 
         with self.path.open("r", encoding="utf-8") as log_file:
             log_file.seek(self.position)
@@ -54,39 +89,3 @@ class LogWatcher:
                 yield event
 
             time.sleep(interval)
-            
-    def test_watch_yields_security_event(tmp_path):
-        log_file = tmp_path / "watch.log"
-
-        log_file.write_text(
-            '185.123.45.20 - - [15/Aug/2026:01:34:21 +0200] '
-            '"GET /admin HTTP/1.1" 401 532 "-" "Mozilla/5.0"\n',
-            encoding="utf-8",
-        )
-
-        watcher = LogWatcher(str(log_file))
-        generator = watcher.watch(interval=0.01)
-
-        event = next(generator)
-
-        assert isinstance(event, SecurityEvent)
-        assert event.source_ip == "185.123.45.20"
-        assert event.http_method == "GET"
-        assert event.path == "/admin"
-        assert event.status_code == 401
-        
-    def test_watcher_accepts_positive_interval(tmp_path):
-        log_file = tmp_path / "watch.log"
-
-        log_file.write_text(
-            '185.123.45.20 - - [15/Aug/2026:01:34:21 +0200] '
-            '"GET /admin HTTP/1.1" 401 532 "-" "Mozilla/5.0"\n',
-            encoding="utf-8",
-        )
-
-        watcher = LogWatcher(str(log_file))
-        generator = watcher.watch(interval=0.01)
-
-        event = next(generator)
-
-        assert event.source_ip == "185.123.45.20"

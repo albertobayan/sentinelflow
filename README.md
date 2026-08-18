@@ -10,9 +10,9 @@ The goal of the project is to simulate a modular SOC/SOAR workflow capable of pr
 
 🚧 Under active development.
 
-Current milestone:
+Current development stage:
 
-**v0.1 — IOC Detection Engine**
+**IOC Detection + Nginx Log Ingestion + Real-Time Monitoring**
 
 ## Focus
 
@@ -24,9 +24,11 @@ Current milestone:
 - SOAR
 - Python
 
-## Current status
+---
 
-### v0.1 — IOC Detection Engine
+## Current Features
+
+### IOC Detection Engine
 
 SentinelFlow currently identifies and validates:
 
@@ -38,65 +40,227 @@ SentinelFlow currently identifies and validates:
 - SHA1 hashes
 - SHA256 hashes
 
-The IOC engine includes automated testing with pytest and handles invalid or malformed input.
+The IOC engine:
 
-## Nginx Log Watcher
+- detects IOC types automatically;
+- validates supported indicators;
+- handles invalid or malformed input;
+- preserves the source of the IOC;
+- includes automated tests with pytest.
 
-SentinelFlow can monitor an Nginx access log incrementally and process newly appended events without re-reading previously processed lines.
+---
 
-Run the watcher:
+## Nginx Log Ingestion
 
-```bash
-python -m sentinelflow.watch
+SentinelFlow can parse Nginx access logs and convert valid log entries into structured `SecurityEvent` objects.
 
-Current pipeline:
+Example Nginx event:
 
-Nginx Log
-    ↓
-LogWatcher
-    ↓
-Nginx Parser
-    ↓
-SecurityEvent
-    ↓
-IOC Detection
-    ↓
-Structured Output
+```text
+185.123.45.20 - - [15/Aug/2026:01:34:21 +0200] "GET /admin HTTP/1.1" 401 532 "-" "Mozilla/5.0"
+```
+
+Parsed data includes:
+
+- timestamp;
+- source;
+- source IP;
+- HTTP method;
+- requested path;
+- HTTP status code;
+- user agent.
+
+SentinelFlow can also process complete Nginx log files and generate ingestion statistics including:
+
+- total lines;
+- valid lines;
+- invalid lines;
+- parsed security events.
+
+---
+
+## Real-Time Nginx Log Monitoring
+
+SentinelFlow includes an incremental Nginx log watcher designed for continuous monitoring.
 
 The watcher:
 
-tracks its current position in the log file;
-processes only newly appended lines;
-ignores malformed Nginx lines;
-supports a configurable polling interval;
-validates invalid polling intervals;
-extracts the source IP as an IOC;
-can be stopped cleanly with Ctrl+C.
+- tracks its current read position;
+- processes only newly appended lines;
+- avoids processing the same line twice;
+- ignores malformed Nginx entries;
+- converts valid entries into `SecurityEvent` objects;
+- extracts the source IP as an IOC;
+- supports configurable polling intervals;
+- validates invalid polling intervals;
+- detects log truncation;
+- detects basic log rotation or replacement;
+- tracks file identity;
+- supports historical and real-time monitoring modes;
+- can be stopped cleanly with `Ctrl+C`.
+
+### Current Pipeline
+
+```text
+Nginx access.log
+       ↓
+LogWatcher
+       ↓
+Truncation / Rotation Handling
+       ↓
+Nginx Parser
+       ↓
+SecurityEvent
+       ↓
+IOC Detection
+       ↓
+Structured Console Output
+```
+
+---
+
+## Log Truncation Handling
+
+SentinelFlow tracks both the current read position and the size of the monitored log file.
+
+If the log becomes smaller than the last known read position, SentinelFlow assumes that the file has been truncated and resets the position.
+
+Conceptually:
+
+```text
+Current position: 1500 bytes
+New file size:     200 bytes
+
+200 < 1500
+    ↓
+Truncation detected
+    ↓
+position = 0
+    ↓
+Read current file from the beginning
+```
+
+This prevents the watcher from remaining at an invalid position after a log file is cleared or truncated.
+
+---
+
+## Basic Log Rotation Handling
+
+SentinelFlow also tracks the identity of the monitored file.
+
+A typical log rotation may look like:
+
+```text
+access.log
+    ↓
+access.log.1
+
+new access.log
+```
+
+When SentinelFlow detects that the file at the monitored path has changed identity, it resets its read position and begins processing the new file.
+
+This allows the watcher to continue operating after basic Nginx log rotation or file replacement.
+
+---
+
+## Historical vs Real-Time Monitoring
+
+`LogWatcher` supports two operating modes.
+
+### Historical Mode
+
+```python
+LogWatcher(
+    "logs/sample_access.log",
+    start_at_end=False,
+)
+```
+
+This starts from the beginning of the file and processes existing content.
+
+### Real-Time Mode
+
+```python
+LogWatcher(
+    "logs/sample_access.log",
+    start_at_end=True,
+)
+```
+
+This starts at the end of the existing file.
+
+Historical log entries are ignored and only events appended after SentinelFlow starts are processed.
+
+The SentinelFlow real-time watcher uses this mode by default.
+
+---
+
+## Running the Real-Time Watcher
+
+Run:
+
+```bash
+python -m sentinelflow.watch
+```
+
+Example startup:
+
+```text
+SentinelFlow Log Watcher
+Watching: logs/sample_access.log
+Waiting for new events...
+Press Ctrl+C to stop.
+```
+
+Existing log entries are ignored.
+
+When a new Nginx event is appended, SentinelFlow processes it automatically.
 
 Example:
 
+```text
 New security event
 ────────────────────
-Timestamp: 15/Aug/2026:01:34:21 +0200
-Source IP: 185.123.45.20
-Method: GET
-Path: /admin
-Status: 401
-User-Agent: Mozilla/5.0
+Timestamp: 18/Aug/2026:16:45:00 +0200
+Source IP: 203.0.113.99
+Method: POST
+Path: /login
+Status: 403
+User-Agent: curl/8.5.0
 IOC Type: IPv4
 IOC Valid: True
 Source: nginx
 ────────────────────
+```
 
-## Usage
+Stop the watcher with:
 
-Start SentinelFlow:
+```text
+Ctrl+C
+```
+
+Expected output:
+
+```text
+SentinelFlow watcher stopped.
+```
+
+---
+
+## IOC CLI
+
+SentinelFlow also provides an interactive CLI for manually analysing indicators of compromise.
+
+Run:
 
 ```bash
 python -m sentinelflow.main
+```
 
 Example:
 
+```text
 SentinelFlow v0.1
 Type 'exit' to quit.
 
@@ -110,11 +274,269 @@ Type: IPv4
 Valid: True
 Source: manual
 ────────────────────
+```
 
-Run tests:
+Example invalid input:
 
-pytest
+```text
+Enter IOC:
+> hello world
+
+IOC analysis
+────────────────────
+Value: hello world
+Type: INVALID
+Valid: False
+Source: manual
+────────────────────
+```
+
+Type:
+
+```text
+exit
+```
+
+or:
+
+```text
+quit
+```
+
+to close the CLI.
+
+---
+
+## Project Architecture
+
+Current high-level architecture:
+
+```text
+                         SentinelFlow
+                              │
+               ┌──────────────┴──────────────┐
+               │                             │
+        Manual IOC Input               Nginx Log
+               │                             │
+               ▼                             ▼
+          IOC Detector                  LogWatcher
+                                             │
+                                  ┌──────────┴──────────┐
+                                  │                     │
+                             Truncation              Rotation
+                              Handling               Handling
+                                  │                     │
+                                  └──────────┬──────────┘
+                                             │
+                                             ▼
+                                        Nginx Parser
+                                             │
+                                             ▼
+                                       SecurityEvent
+                                             │
+                                             ▼
+                                      Event Processor
+                                             │
+                                             ▼
+                                       IOC Detection
+                                             │
+                                             ▼
+                                      Structured Output
+```
+
+SentinelFlow is being developed incrementally toward a larger defensive security automation workflow:
+
+```text
+Security Event
+      ↓
+Ingestion
+      ↓
+Parsing
+      ↓
+IOC Detection
+      ↓
+Threat Intelligence
+      ↓
+Risk Assessment
+      ↓
+Decision Engine
+      ↓
+Alerting
+      ↓
+Defensive Response
+      ↓
+Audit Trail
+```
+
+---
+
+## Project Structure
+
+```text
+sentinelflow/
+│
+├── logs/
+│   └── sample_access.log
+│
+├── src/
+│   └── sentinelflow/
+│       │
+│       ├── __init__.py
+│       ├── main.py
+│       ├── watch.py
+│       │
+│       ├── detection/
+│       │   ├── __init__.py
+│       │   ├── domain_detector.py
+│       │   ├── hash_detector.py
+│       │   ├── ioc_detector.py
+│       │   ├── ip_detector.py
+│       │   └── url_detector.py
+│       │
+│       ├── ingestion/
+│       │   ├── __init__.py
+│       │   ├── event_processor.py
+│       │   ├── log_reader.py
+│       │   ├── log_watcher.py
+│       │   └── nginx_parser.py
+│       │
+│       └── models/
+│           ├── __init__.py
+│           ├── ingestion_result.py
+│           ├── ioc.py
+│           └── security_event.py
+│
+├── tests/
+│   ├── test_event_processor.py
+│   ├── test_ioc_detection.py
+│   ├── test_log_reader.py
+│   ├── test_log_watcher.py
+│   ├── test_nginx_parser.py
+│   └── test_watch.py
+│
+├── .gitignore
+├── pyproject.toml
+└── README.md
+```
+
+---
+
+## Testing
+
+SentinelFlow uses `pytest` for automated testing.
+
+Run the complete test suite:
+
+```bash
+pytest -v
+```
+
+Tests currently cover areas including:
+
+- IPv4 detection;
+- IPv6 detection;
+- domain detection;
+- URL detection;
+- MD5 detection;
+- SHA1 detection;
+- SHA256 detection;
+- malformed IOC handling;
+- Nginx parsing;
+- invalid Nginx lines;
+- log file ingestion;
+- ingestion statistics;
+- missing files;
+- invalid file paths;
+- incremental log reading;
+- duplicate prevention;
+- new event parsing;
+- invalid event filtering;
+- polling interval validation;
+- continuous event yielding;
+- file truncation recovery;
+- basic log rotation recovery;
+- file identity tracking;
+- watcher position tracking;
+- append/truncate sequences;
+- append/rotation sequences;
+- historical watcher mode;
+- real-time `start_at_end` mode;
+- structured event output.
+
+---
+
+## Development Philosophy
+
+SentinelFlow is developed incrementally using the following workflow:
+
+```text
+Build
+  ↓
+Understand
+  ↓
+Test
+  ↓
+Document
+  ↓
+Commit
+  ↓
+Next Feature
+```
+
+Each component is designed to remain modular and testable before additional functionality is introduced.
+
+---
+
+## Roadmap
+
+Planned areas of development include:
+
+- additional log source support;
+- improved event normalization;
+- internal/private IP handling;
+- allowlists;
+- threat intelligence integrations;
+- reputation enrichment;
+- caching;
+- risk scoring;
+- confidence scoring;
+- severity classification;
+- behavioral detections;
+- persistence and audit logging;
+- alert generation;
+- defensive response workflows;
+- dry-run response mode;
+- human approval workflows;
+- API access;
+- containerization;
+- CI/CD;
+- production-style documentation and demonstrations.
+
+---
+
+## Security Philosophy
+
+SentinelFlow is designed as a defensive security project.
+
+Future response capabilities will prioritize:
+
+- controlled actions;
+- explicit authorization;
+- auditability;
+- human oversight;
+- safe defaults;
+- dry-run execution before active remediation.
+
+---
 
 ## Disclaimer
 
-SentinelFlow is intended exclusively for defensive security research, SOC training, controlled laboratory environments, owned infrastructure and explicitly authorized systems.
+SentinelFlow is intended exclusively for:
+
+- defensive security research;
+- SOC training;
+- cybersecurity laboratories;
+- owned infrastructure;
+- explicitly authorized systems.
+
+It is not intended for unauthorized access, offensive operations or activity against systems without permission.
