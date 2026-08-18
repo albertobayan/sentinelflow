@@ -13,6 +13,7 @@ def test_valid_nginx_log():
     assert event.source_ip == "185.123.45.20"
     assert event.timestamp == "15/Aug/2026:01:34:21 +0200"
     assert event.source == "nginx"
+    assert event.event_type == "http_request"
     assert event.http_method == "GET"
     assert event.path == "/admin"
     assert event.status_code == 401

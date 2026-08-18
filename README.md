@@ -12,7 +12,7 @@ The goal of the project is to simulate a modular SOC/SOAR workflow capable of pr
 
 Current development stage:
 
-**IOC Detection + Nginx Log Ingestion + Real-Time Monitoring**
+**IOC Detection + Nginx Log Ingestion + Real-Time Monitoring + Normalized Security Events**
 
 ## Focus
 
@@ -64,6 +64,7 @@ Parsed data includes:
 
 - timestamp;
 - source;
+- event type;
 - source IP;
 - HTTP method;
 - requested path;
@@ -76,6 +77,81 @@ SentinelFlow can also process complete Nginx log files and generate ingestion st
 - valid lines;
 - invalid lines;
 - parsed security events.
+
+---
+
+## Normalized Security Events
+
+SentinelFlow uses a normalized `SecurityEvent` model to represent security events from different data sources.
+
+Each event contains a set of common fields:
+
+- timestamp;
+- source;
+- event type;
+- source IP.
+
+Source-specific fields can be optional.
+
+For HTTP events, SentinelFlow currently supports:
+
+- HTTP method;
+- requested path;
+- HTTP status code;
+- user agent.
+
+Example HTTP event:
+
+```python
+SecurityEvent(
+    timestamp="18/Aug/2026:17:00:00 +0200",
+    source="nginx",
+    event_type="http_request",
+    source_ip="203.0.113.50",
+    http_method="GET",
+    path="/admin",
+    status_code=401,
+    user_agent="Mozilla/5.0",
+)
+```
+
+The same model can also represent non-HTTP events:
+
+```python
+SecurityEvent(
+    timestamp="18/Aug/2026:17:05:00 +0200",
+    source="windows",
+    event_type="authentication",
+    source_ip="10.0.0.15",
+)
+```
+
+In this case, HTTP-specific fields remain `None`.
+
+This normalization allows SentinelFlow to process different security data sources through a common internal event model.
+
+Current concept:
+
+```text
+Nginx
+Windows
+Firewall
+EDR
+Other Sources
+    │
+    ▼
+SecurityEvent
+    │
+    ├── timestamp
+    ├── source
+    ├── event_type
+    ├── source_ip
+    │
+    └── optional source-specific fields
+    │
+    ▼
+Detection / Enrichment / Risk / Response
+```
 
 ---
 
@@ -334,6 +410,17 @@ Current high-level architecture:
                                              ▼
                                        SecurityEvent
                                              │
+                                ┌────────────┴────────────┐
+                                │                         │
+                           Common Fields           Optional HTTP Fields
+                                │                         │
+                           timestamp                 http_method
+                           source                    path
+                           event_type                status_code
+                           source_ip                 user_agent
+                                │                         │
+                                └────────────┬────────────┘
+                                             │
                                              ▼
                                       Event Processor
                                              │
@@ -352,6 +439,8 @@ Security Event
 Ingestion
       ↓
 Parsing
+      ↓
+Normalization
       ↓
 IOC Detection
       ↓
@@ -412,6 +501,7 @@ sentinelflow/
 │   ├── test_log_reader.py
 │   ├── test_log_watcher.py
 │   ├── test_nginx_parser.py
+│   ├── test_security_event.py
 │   └── test_watch.py
 │
 ├── .gitignore
@@ -461,7 +551,13 @@ Tests currently cover areas including:
 - append/rotation sequences;
 - historical watcher mode;
 - real-time `start_at_end` mode;
-- structured event output.
+- structured event output;
+- normalized HTTP security events;
+- non-HTTP security events;
+- optional HTTP fields;
+- event type preservation;
+- immutable `SecurityEvent` objects;
+- IOC extraction from HTTP and non-HTTP events.
 
 ---
 
@@ -492,7 +588,7 @@ Each component is designed to remain modular and testable before additional func
 Planned areas of development include:
 
 - additional log source support;
-- improved event normalization;
+- further event normalization;
 - internal/private IP handling;
 - allowlists;
 - threat intelligence integrations;

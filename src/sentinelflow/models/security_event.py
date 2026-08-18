@@ -5,8 +5,10 @@ from dataclasses import dataclass
 class SecurityEvent:
     timestamp: str
     source: str
+    event_type: str
     source_ip: str
-    http_method: str
-    path: str
-    status_code: int
-    user_agent: str
+
+    http_method: str | None = None
+    path: str | None = None
+    status_code: int | None = None
+    user_agent: str | None = None

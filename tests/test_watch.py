@@ -6,6 +6,7 @@ def test_display_event(capsys):
     event = SecurityEvent(
         timestamp="17/Aug/2026:18:25:00 +0200",
         source="nginx",
+        event_type="http_request",
         source_ip="203.0.113.99",
         http_method="POST",
         path="/login",
@@ -32,6 +33,7 @@ def test_display_event_detects_source_ioc(capsys):
     event = SecurityEvent(
         timestamp="17/Aug/2026:18:25:00 +0200",
         source="nginx",
+        event_type="http_request",
         source_ip="8.8.8.8",
         http_method="GET",
         path="/api/status",

@@ -24,6 +24,7 @@ def parse_nginx_log(line: str) -> SecurityEvent | None:
     return SecurityEvent(
         timestamp=match.group("timestamp"),
         source="nginx",
+        event_type="http_request",
         source_ip=match.group("source_ip"),
         http_method=match.group("http_method"),
         path=match.group("path"),
