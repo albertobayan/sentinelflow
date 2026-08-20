@@ -7,6 +7,10 @@ name = "sentinelflow"
 version = "0.1.0"
 description = "Automated Threat Detection, Enrichment & Response Platform"
 requires-python = ">=3.10"
+dependencies = [
+    "python-dotenv",
+    "requests",
+]
 
 [project.optional-dependencies]
 dev = [
