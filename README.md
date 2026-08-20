@@ -673,6 +673,38 @@ Examples:
 
 A `False` enrichment decision does not mean that an IP is safe. It only means that, according to the current SentinelFlow policy, the address should not be sent to an external Threat Intelligence enrichment stage.
 
+## Threat Intelligence
+
+SentinelFlow includes a modular threat intelligence layer designed to support multiple providers without coupling the core application to a specific external service.
+
+The current implementation includes:
+
+- A common `ThreatIntelProvider` interface.
+- A normalized `ThreatIntelResult` model.
+- A local threat intelligence provider for deterministic testing.
+- A `ThreatIntelService` capable of querying one or multiple providers.
+- Integration with the IP enrichment policy.
+- Automatic enrichment only for public IP addresses that are not allowlisted.
+
+Current flow:
+
+```text
+SecurityEvent
+    ↓
+Source IP
+    ↓
+IP Classification
+    ↓
+Allowlist Check
+    ↓
+Enrichment Policy
+    ↓
+ThreatIntelService
+    ↓
+ThreatIntelProvider
+    ↓
+ThreatIntelResult
+
 ## Development Philosophy
 
 SentinelFlow is developed incrementally using the following workflow:

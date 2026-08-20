@@ -1,5 +1,6 @@
 from sentinelflow.ingestion.event_processor import (
     classify_source_ip,
+    enrich_source_ip,
     extract_source_ioc,
     is_source_ip_allowlisted,
     should_enrich_source_ip,
@@ -8,7 +9,8 @@ from sentinelflow.models.ip_classification import IPCategory
 from sentinelflow.ingestion.event_processor import extract_source_ioc
 from sentinelflow.models.ioc import IOCType
 from sentinelflow.models.security_event import SecurityEvent
-
+from sentinelflow.threat_intel.local_provider import LocalThreatIntelProvider
+from sentinelflow.threat_intel.service import ThreatIntelService
 
 def test_extract_source_ioc():
     event = SecurityEvent(
@@ -188,3 +190,97 @@ def test_allowlisted_source_ip_should_not_be_enriched():
     )
 
     assert should_enrich_source_ip(event) is False
+    
+def test_enrich_public_unknown_source_ip():
+    event = SecurityEvent(
+        timestamp="20/Aug/2026:22:00:00 +0200",
+        source="nginx",
+        event_type="http_request",
+        source_ip="9.9.9.9",
+    )
+
+    service = ThreatIntelService(
+        providers=[
+            LocalThreatIntelProvider(),
+        ]
+    )
+
+    results = enrich_source_ip(
+        event,
+        service,
+    )
+
+    assert len(results) == 1
+
+    result = results[0]
+
+    assert result.indicator == "9.9.9.9"
+    assert result.provider == "local"
+    assert result.malicious is True
+    assert result.score == 80
+    assert result.confidence == 90
+    
+def test_private_source_ip_is_not_enriched():
+    event = SecurityEvent(
+        timestamp="20/Aug/2026:22:05:00 +0200",
+        source="nginx",
+        event_type="http_request",
+        source_ip="192.168.1.20",
+    )
+
+    service = ThreatIntelService(
+        providers=[
+            LocalThreatIntelProvider(),
+        ]
+    )
+
+    results = enrich_source_ip(
+        event,
+        service,
+    )
+
+    assert results == []
+
+def test_allowlisted_source_ip_is_not_enriched():
+    event = SecurityEvent(
+        timestamp="20/Aug/2026:22:10:00 +0200",
+        source="nginx",
+        event_type="http_request",
+        source_ip="8.8.8.8",
+    )
+
+    service = ThreatIntelService(
+        providers=[
+            LocalThreatIntelProvider(),
+        ]
+    )
+
+    results = enrich_source_ip(
+        event,
+        service,
+    )
+
+    assert results == []
+
+def test_custom_allowlist_prevents_source_ip_enrichment():
+    event = SecurityEvent(
+        timestamp="20/Aug/2026:22:15:00 +0200",
+        source="nginx",
+        event_type="http_request",
+        source_ip="9.9.9.9",
+    )
+
+    service = ThreatIntelService(
+        providers=[
+            LocalThreatIntelProvider(),
+        ]
+    )
+
+    results = enrich_source_ip(
+        event,
+        service,
+        allowlist={"9.9.9.9"},
+    )
+
+    assert results == []
+
