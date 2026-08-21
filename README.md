@@ -14,7 +14,7 @@ The goal of the project is to simulate a modular SOC/SOAR workflow capable of in
 
 Current development stage:
 
-**Log Ingestion, Event Normalization & Resilient Multi-Provider Threat Intelligence Enrichment**
+**Threat Intelligence Enrichment & Risk Assessment**
 
 Currently implemented:
 
@@ -44,6 +44,16 @@ Currently implemented:
 - Time-based cache expiration.
 - Safe caching policy for complete enrichment results.
 - Automatic provider retries after partial or failed enrichment.
+- Normalized Risk Assessment model.
+- Risk score validation.
+- Confidence validation.
+- Automatic severity classification.
+- Multi-provider risk score aggregation.
+- Confidence-weighted risk scoring.
+- Global risk confidence calculation.
+- Explainable risk reasons.
+- Partial-enrichment confidence adjustment.
+- Threat Intelligence lookup to Risk Assessment integration.
 
 ---
 
@@ -54,6 +64,7 @@ SentinelFlow focuses on:
 - Blue Team security.
 - SOC automation.
 - Threat Intelligence.
+- Risk Assessment.
 - Detection Engineering.
 - Incident Response.
 - SOAR workflows.
@@ -66,7 +77,7 @@ SentinelFlow focuses on:
 
 ## Current Architecture
 
-SentinelFlow is being developed as a modular pipeline.
+SentinelFlow is being developed as a modular defensive security pipeline.
 
 ```text
 Log Source
@@ -97,7 +108,9 @@ ThreatIntelResult
     ↓
 ThreatIntelLookupResult
     ↓
-Future Risk Assessment
+Risk Engine
+    ↓
+RiskAssessment
     ↓
 Future Decision Engine
     ↓
@@ -111,6 +124,20 @@ Future Audit Trail
 Each component is designed to have a clearly defined responsibility.
 
 SentinelFlow intentionally avoids placing the entire security workflow inside a single large function.
+
+The architecture separates:
+
+```text
+data collection
+↓
+normalization
+↓
+enrichment
+↓
+risk interpretation
+↓
+future decision making
+```
 
 ---
 
@@ -1050,16 +1077,7 @@ errors == []
 
 This prevents temporary provider failures, timeouts, authentication problems or rate limits from being artificially extended by the local cache.
 
-For example:
-
-```text
-VirusTotal → timeout
-AbuseIPDB → timeout
-```
-
-does not create a cached failure.
-
-A subsequent lookup can therefore retry the providers.
+A subsequent lookup can retry the providers immediately after a partial or failed enrichment.
 
 ---
 
@@ -1140,34 +1158,6 @@ SentinelFlow supports external IP reputation enrichment through the **VirusTotal
 
 The integration is implemented through the modular Threat Intelligence architecture, allowing VirusTotal to operate as a `ThreatIntelProvider` without coupling the rest of the application directly to the external API.
 
-### Current VirusTotal Flow
-
-```text
-SecurityEvent
-    ↓
-Source IP
-    ↓
-IP Classification
-    ↓
-Allowlist Check
-    ↓
-Enrichment Policy
-    ↓
-ThreatIntelService
-    ↓
-ThreatIntelCache
-    ↓
-VirusTotalProvider
-    ↓
-VirusTotal API v3
-    ↓
-last_analysis_stats
-    ↓
-SentinelFlow normalization
-    ↓
-ThreatIntelResult
-```
-
 ### VirusTotal Provider
 
 The `VirusTotalProvider` currently:
@@ -1198,7 +1188,7 @@ undetected
 timeout
 ```
 
-SentinelFlow converts relevant external statistics into its internal fields:
+SentinelFlow converts relevant external statistics into:
 
 ```text
 malicious
@@ -1209,8 +1199,6 @@ confidence
 The current normalization rules are internal SentinelFlow rules.
 
 ### Malicious Flag
-
-Currently:
 
 ```text
 one or more malicious detections
@@ -1224,13 +1212,6 @@ malicious = False
 ```
 
 ### Score
-
-The current internal score gives:
-
-```text
-malicious detection → full weight
-suspicious detection → half weight
-```
 
 Conceptually:
 
@@ -1258,105 +1239,13 @@ confidence = 0
 
 A score of zero does **not** automatically mean that an indicator is safe.
 
-### Important
-
-The SentinelFlow `score` and `confidence` values are:
-
-```text
-SentinelFlow-specific normalization metrics
-```
-
-They must **not** be interpreted as:
-
-- probabilities of maliciousness;
-- official VirusTotal risk scores;
-- guarantees that an indicator is safe or malicious.
-
-A dedicated risk engine will be implemented later in the project.
-
----
-
-## VirusTotal Error Handling
-
-The VirusTotal integration includes defensive error handling for external failures.
-
-Current cases include:
-
-```text
-Timeout
-→ VirusTotalError("VirusTotal request timed out")
-
-Connection failure
-→ VirusTotalError("Could not connect to VirusTotal")
-
-HTTP 401
-→ VirusTotalError("VirusTotal rejected the API key")
-
-HTTP 403
-→ VirusTotalError("VirusTotal access forbidden")
-
-HTTP 404
-→ VirusTotalError("Indicator not found in VirusTotal")
-
-HTTP 429
-→ VirusTotalError("VirusTotal rate limit exceeded")
-
-HTTP 5xx
-→ VirusTotalError("VirusTotal service error")
-
-Other request failures
-→ VirusTotalError("VirusTotal request failed")
-
-Invalid JSON
-→ VirusTotalError("VirusTotal returned invalid JSON")
-
-Unexpected API structure
-→ VirusTotalError(
-    "VirusTotal response has an unexpected structure"
-)
-```
-
-This prevents low-level HTTP implementation details from leaking throughout the rest of the application.
+The provider-level score is not the final SentinelFlow Risk Score.
 
 ---
 
 ## AbuseIPDB Integration
 
 SentinelFlow also supports external IP reputation enrichment through the **AbuseIPDB API v2**.
-
-The provider follows the same Threat Intelligence abstraction used by VirusTotal.
-
-### Current AbuseIPDB Flow
-
-```text
-SecurityEvent
-    ↓
-Source IP
-    ↓
-IP Classification
-    ↓
-Allowlist Check
-    ↓
-Enrichment Policy
-    ↓
-ThreatIntelService
-    ↓
-ThreatIntelCache
-    ↓
-AbuseIPDBProvider
-    ↓
-AbuseIPDB API v2
-    ↓
-/check
-    ↓
-abuseConfidenceScore
-    ↓
-SentinelFlow normalization
-    ↓
-ThreatIntelResult
-```
-
-### AbuseIPDB Provider
 
 The `AbuseIPDBProvider` currently:
 
@@ -1391,24 +1280,9 @@ in the range:
 0 ───────────────────────── 100
 ```
 
-SentinelFlow currently maps that value directly into its internal score:
+SentinelFlow currently maps that value into its normalized provider score.
 
-```text
-AbuseIPDB abuseConfidenceScore
-              ↓
-      SentinelFlow score
-```
-
-For example:
-
-```text
-abuseConfidenceScore = 80
-→ score = 80
-```
-
-### Malicious Flag
-
-Current SentinelFlow policy:
+Current provider-level malicious policy:
 
 ```text
 score < 50
@@ -1420,77 +1294,17 @@ score >= 50
 
 This threshold is a **SentinelFlow-specific normalization policy**.
 
-It should not be interpreted as an official AbuseIPDB statement that every IP address with a score of 50 or greater is definitively malicious.
-
-### Confidence
-
 Current normalized AbuseIPDB results use:
 
 ```text
 confidence = 100
 ```
 
-when a valid score has been successfully retrieved and processed.
+when a valid score is successfully retrieved and processed.
 
-This represents successful interpretation of the external score.
+This does **not** represent absolute certainty that the indicator is malicious or safe.
 
-It does **not** represent absolute certainty that the indicator is malicious or safe.
-
-This model is expected to become more sophisticated when the dedicated risk and confidence engine is introduced.
-
----
-
-## AbuseIPDB Error Handling
-
-The AbuseIPDB integration includes defensive error handling.
-
-Current cases include:
-
-```text
-Timeout
-→ AbuseIPDBError("AbuseIPDB request timed out")
-
-Connection failure
-→ AbuseIPDBError("Could not connect to AbuseIPDB")
-
-HTTP 401
-→ AbuseIPDBError("AbuseIPDB rejected the API key")
-
-HTTP 402
-→ AbuseIPDBError("AbuseIPDB plan limit exceeded")
-
-HTTP 403
-→ AbuseIPDBError("AbuseIPDB access forbidden")
-
-HTTP 422
-→ AbuseIPDBError(
-    "AbuseIPDB rejected the request parameters"
-)
-
-HTTP 429
-→ AbuseIPDBError("AbuseIPDB rate limit exceeded")
-
-HTTP 5xx
-→ AbuseIPDBError("AbuseIPDB service error")
-
-Other request failures
-→ AbuseIPDBError("AbuseIPDB request failed")
-
-Invalid JSON
-→ AbuseIPDBError("AbuseIPDB returned invalid JSON")
-
-Unexpected API structure
-→ AbuseIPDBError(
-    "AbuseIPDB response has an unexpected structure"
-)
-
-Invalid abuse score
-→ AbuseIPDBError(
-    "AbuseIPDB returned an invalid abuse score"
-)
-```
-
-AbuseIPDB-specific exceptions inherit from the common Threat Intelligence exception hierarchy.
+The provider-level score is later processed independently by the Risk Engine.
 
 ---
 
@@ -1514,8 +1328,6 @@ This provides a common abstraction for external Threat Intelligence failures whi
 
 ## Multi-Provider Threat Intelligence
 
-SentinelFlow can operate with multiple Threat Intelligence providers through the same service.
-
 Current providers:
 
 ```text
@@ -1523,35 +1335,6 @@ LocalThreatIntelProvider
 VirusTotalProvider
 AbuseIPDBProvider
 ```
-
-Conceptually:
-
-```text
-Indicator
-    ↓
-ThreatIntelService
-    ↓
-ThreatIntelCache
-    │
-    ├── VirusTotalProvider
-    │       ↓
-    │   VirusTotal API
-    │       ↓
-    │   ThreatIntelResult
-    │
-    └── AbuseIPDBProvider
-            ↓
-        AbuseIPDB API
-            ↓
-        ThreatIntelResult
-             │
-             ↓
-    ThreatIntelLookupResult
-```
-
-Both external services use different APIs and reputation models.
-
-However, the rest of SentinelFlow receives consistent internal structures.
 
 Individual provider results use:
 
@@ -1574,19 +1357,391 @@ ThreatIntelLookupResult
 └── partial
 ```
 
-This is one of the main architectural goals of the project:
+This allows the rest of the system to process provider-independent data.
+
+---
+
+# Risk Assessment Engine
+
+SentinelFlow includes a dedicated Risk Assessment layer separated from Threat Intelligence collection.
+
+Threat Intelligence answers:
 
 ```text
-Provider-specific API format
-            ↓
-Provider normalization
-            ↓
-Common SentinelFlow models
-            ↓
-Provider-independent processing
+What does each external provider report?
 ```
 
-Final provider aggregation and risk decisions remain separate responsibilities.
+The Risk Engine answers:
+
+```text
+How should SentinelFlow interpret the combined evidence?
+```
+
+Architecture:
+
+```text
+ThreatIntelLookupResult
+        ↓
+available ThreatIntelResult objects
+        ↓
+Risk Engine
+        │
+        ├── score aggregation
+        ├── confidence weighting
+        ├── global confidence
+        ├── severity classification
+        └── explainable reasons
+        ↓
+RiskAssessment
+```
+
+This separation prevents provider-specific logic from directly controlling future alerting or defensive actions.
+
+---
+
+## RiskAssessment Model
+
+Risk evaluations are represented through the immutable:
+
+```text
+RiskAssessment
+```
+
+Current fields:
+
+```text
+indicator
+score
+severity
+confidence
+reasons
+```
+
+Conceptually:
+
+```python
+RiskAssessment(
+    indicator="9.9.9.9",
+    score=52,
+    severity=RiskSeverity.HIGH,
+    confidence=90,
+    reasons=(
+        "virustotal: score=30, confidence=80, status=malicious",
+        "abuseipdb: score=70, confidence=100, status=malicious",
+    ),
+)
+```
+
+The model validates:
+
+```text
+indicator
+→ non-empty
+
+score
+→ integer
+→ 0–100
+
+confidence
+→ integer
+→ 0–100
+```
+
+The model is immutable after construction.
+
+---
+
+## Risk Severity
+
+Current severities are:
+
+```text
+LOW
+MEDIUM
+HIGH
+CRITICAL
+```
+
+Current SentinelFlow policy:
+
+```text
+0–24
+→ LOW
+
+25–49
+→ MEDIUM
+
+50–74
+→ HIGH
+
+75–100
+→ CRITICAL
+```
+
+These thresholds are internal SentinelFlow policy.
+
+They are not official VirusTotal or AbuseIPDB severity classifications.
+
+Severity is generated automatically from the final SentinelFlow Risk Score rather than being manually chosen by callers.
+
+---
+
+## Base Risk Score
+
+SentinelFlow can calculate a basic multi-provider score using the arithmetic mean of available normalized provider scores.
+
+Example:
+
+```text
+VirusTotal score = 20
+AbuseIPDB score  = 80
+```
+
+Base score:
+
+```text
+(20 + 80) / 2
+= 50
+```
+
+The base calculation is retained as a simple fallback and development reference.
+
+---
+
+## Confidence-Weighted Risk Score
+
+The main current Risk Engine calculation weights provider scores according to provider confidence.
+
+Conceptually:
+
+```text
+Σ(score × confidence)
+─────────────────────
+    Σ(confidence)
+```
+
+Example:
+
+```text
+VirusTotal
+score = 90
+confidence = 10
+
+AbuseIPDB
+score = 30
+confidence = 100
+```
+
+Simple average:
+
+```text
+60
+```
+
+Confidence-weighted result:
+
+```text
+35
+```
+
+This prevents a low-confidence score from having the same influence as a high-confidence score.
+
+When all available provider confidence values are zero, SentinelFlow falls back to the unweighted base risk score instead of treating risk as zero.
+
+---
+
+## Global Risk Confidence
+
+SentinelFlow separately calculates confidence in the overall Risk Assessment.
+
+For complete enrichment, current global confidence is the arithmetic mean of available provider confidence values.
+
+Example:
+
+```text
+VirusTotal confidence = 80
+AbuseIPDB confidence  = 100
+
+Global confidence = 90
+```
+
+Risk score and risk confidence represent different concepts.
+
+A high Risk Score with low confidence is possible.
+
+For example:
+
+```text
+Risk Score = 80
+Confidence = 20
+```
+
+means that available evidence suggests elevated risk, but the evidence quality or coverage is weak.
+
+---
+
+## Partial Enrichment Risk Policy
+
+SentinelFlow can generate a Risk Assessment from a partial Threat Intelligence lookup when at least one valid provider result exists.
+
+Example:
+
+```text
+VirusTotal ✅
+AbuseIPDB ❌
+```
+
+The available provider result is still used to calculate:
+
+```text
+risk score
+severity
+```
+
+However, global confidence is reduced according to provider coverage.
+
+Conceptually:
+
+```text
+adjusted confidence =
+available-result confidence
+×
+successful providers / total attempted providers
+```
+
+Example:
+
+```text
+VirusTotal confidence = 90
+
+1 provider succeeded
+1 provider failed
+
+coverage = 1 / 2
+
+adjusted confidence =
+90 × 0.5
+= 45
+```
+
+Therefore a partial lookup can produce:
+
+```text
+Risk Score: 70
+Severity: HIGH
+Confidence: 45
+```
+
+rather than falsely presenting the assessment as fully supported.
+
+---
+
+## Complete Threat Intelligence Failure
+
+SentinelFlow does not create a Risk Assessment when there are no valid Threat Intelligence results.
+
+For example:
+
+```text
+VirusTotal ❌
+AbuseIPDB ❌
+```
+
+does **not** become:
+
+```text
+Risk Score = 0
+Severity = LOW
+```
+
+Instead, risk assessment is rejected because no evidence is available.
+
+This protects the system from treating:
+
+```text
+unknown
+```
+
+as:
+
+```text
+safe
+```
+
+---
+
+## Explainable Risk Reasons
+
+Risk Assessments include human-readable reasons derived from provider signals.
+
+Example:
+
+```text
+virustotal: score=70, confidence=90, status=malicious
+```
+
+Another provider may produce:
+
+```text
+abuseipdb: score=20, confidence=100, status=not malicious
+```
+
+If a provider fails during a partial lookup, the failure is also preserved:
+
+```text
+Threat Intelligence provider error:
+abuseipdb: AbuseIPDB request timed out
+```
+
+This makes Risk Assessment explainable rather than returning only an opaque numerical score.
+
+Future detection and behavioral signals can be added to the same explanation layer.
+
+---
+
+## Risk Assessment Flow
+
+The complete implemented flow is now:
+
+```text
+SecurityEvent
+    ↓
+source_ip
+    ↓
+IOC Detection
+    ↓
+IP Classification
+    ↓
+Allowlist
+    ↓
+Enrichment Policy
+    ↓
+ThreatIntelService
+    ↓
+ThreatIntelCache
+    ↓
+┌──────────────────────┐
+│ Threat Intel Providers│
+├──────────┬───────────┤
+│VirusTotal│ AbuseIPDB │
+└─────┬────┴─────┬─────┘
+      ↓          ↓
+ThreatIntelResult
+      ↓
+ThreatIntelLookupResult
+      ↓
+Risk Engine
+      │
+      ├── weighted score
+      ├── confidence
+      ├── severity
+      ├── partial coverage
+      └── reasons
+      ↓
+RiskAssessment
+```
+
+Future decision, alerting and response layers will consume the normalized `RiskAssessment` rather than depending directly on provider-specific data.
 
 ---
 
@@ -1623,24 +1778,6 @@ Example:
 VIRUSTOTAL_API_KEY=your_api_key_here
 ABUSEIPDB_API_KEY=your_api_key_here
 ```
-
-Configuration flow:
-
-```text
-.env
- ↓
-config.py
- │
- ├── VIRUSTOTAL_API_KEY
- │        ↓
- │   VirusTotalProvider
- │
- └── ABUSEIPDB_API_KEY
-          ↓
-     AbuseIPDBProvider
-```
-
-Secrets are never intended to be embedded directly inside Python source code.
 
 ---
 
@@ -1779,9 +1916,17 @@ sentinelflow/
 │       │   ├── ingestion_result.py
 │       │   ├── ioc.py
 │       │   ├── ip_classification.py
+│       │   ├── risk.py
 │       │   ├── security_event.py
 │       │   ├── threat_intel.py
 │       │   └── threat_intel_lookup.py
+│       │
+│       ├── risk/
+│       │   ├── __init__.py
+│       │   ├── engine.py
+│       │   ├── reasons.py
+│       │   ├── scoring.py
+│       │   └── severity.py
 │       │
 │       └── threat_intel/
 │           ├── __init__.py
@@ -1804,6 +1949,11 @@ sentinelflow/
 │   ├── test_log_reader.py
 │   ├── test_log_watcher.py
 │   ├── test_nginx_parser.py
+│   ├── test_risk.py
+│   ├── test_risk_engine.py
+│   ├── test_risk_reasons.py
+│   ├── test_risk_scoring.py
+│   ├── test_risk_severity.py
 │   ├── test_security_event.py
 │   ├── test_threat_intel.py
 │   ├── test_threat_intel_cache.py
@@ -1833,178 +1983,157 @@ Run the complete test suite:
 pytest -v
 ```
 
-If pytest cache/temp permissions are problematic in the current Windows environment, the suite can be executed with:
+If pytest cache/temp permissions are problematic in the current Windows environment:
 
 ```powershell
 pytest -v --basetemp=.\tmp -p no:cacheprovider
 ```
 
-Run only IOC tests:
+Run IOC tests:
 
 ```powershell
 pytest tests/test_ioc_detection.py -v -p no:cacheprovider
 ```
 
-Run only Threat Intelligence service tests:
+Run Threat Intelligence service tests:
 
 ```powershell
 pytest tests/test_threat_intel.py -v -p no:cacheprovider
 ```
 
-Run only Threat Intelligence lookup-result tests:
+Run Threat Intelligence lookup tests:
 
 ```powershell
 pytest tests/test_threat_intel_lookup.py -v -p no:cacheprovider
 ```
 
-Run only Threat Intelligence cache tests:
+Run Threat Intelligence cache tests:
 
 ```powershell
 pytest tests/test_threat_intel_cache.py -v -p no:cacheprovider
 ```
 
-Run only VirusTotal tests:
+Run VirusTotal tests:
 
 ```powershell
 pytest tests/test_virustotal_provider.py -v -p no:cacheprovider
 ```
 
-Run only AbuseIPDB tests:
+Run AbuseIPDB tests:
 
 ```powershell
 pytest tests/test_abuseipdb_provider.py -v -p no:cacheprovider
 ```
 
-Run configuration tests:
+Run Risk Assessment model tests:
 
 ```powershell
-pytest tests/test_config.py -v -p no:cacheprovider
+pytest tests/test_risk.py -v -p no:cacheprovider
 ```
 
-Filter tests:
+Run Risk Severity tests:
 
 ```powershell
-pytest -k ipv4 -v -p no:cacheprovider
+pytest tests/test_risk_severity.py -v -p no:cacheprovider
+```
+
+Run Risk Scoring tests:
+
+```powershell
+pytest tests/test_risk_scoring.py -v -p no:cacheprovider
+```
+
+Run Risk Reasons tests:
+
+```powershell
+pytest tests/test_risk_reasons.py -v -p no:cacheprovider
+```
+
+Run Risk Engine tests:
+
+```powershell
+pytest tests/test_risk_engine.py -v -p no:cacheprovider
+```
+
+Run all Risk tests:
+
+```powershell
+pytest tests/test_risk.py tests/test_risk_severity.py tests/test_risk_scoring.py tests/test_risk_reasons.py tests/test_risk_engine.py -v -p no:cacheprovider
 ```
 
 Tests currently cover areas including:
 
-- IPv4 detection;
-- IPv6 detection;
-- domain detection;
-- URL detection;
-- MD5 detection;
-- SHA1 detection;
-- SHA256 detection;
-- malformed IOC handling;
-- whitespace normalization;
-- IOC source tracking;
+- IOC detection and validation;
+- IPv4 and IPv6 detection;
+- domains, URLs and cryptographic hashes;
+- IOC normalization and source tracking;
 - structured security events;
-- HTTP and non-HTTP event representation;
-- Nginx parsing;
-- invalid Nginx lines;
-- log file ingestion;
+- Nginx log parsing;
+- full log ingestion;
 - ingestion statistics;
-- missing files;
-- invalid file paths;
-- incremental log reading;
+- malformed log handling;
+- real-time log monitoring;
+- incremental reading;
 - duplicate prevention;
-- new event parsing;
-- invalid event filtering;
-- polling interval validation;
-- continuous event yielding;
-- file truncation recovery;
-- basic log rotation recovery;
-- file identity tracking;
-- watcher position tracking;
-- append/truncate sequences;
-- append/rotation sequences;
-- historical watcher mode;
-- real-time `start_at_end` mode;
-- IOC extraction from events;
+- truncation recovery;
+- basic rotation recovery;
+- event-level IOC extraction;
 - IP classification;
-- public/private IP classification;
 - special IP categories;
 - IP allowlisting;
-- custom allowlists;
 - enrichment policy;
-- event-level enrichment decisions;
-- normalized Threat Intelligence results;
-- immutable Threat Intelligence results;
-- abstract Threat Intelligence provider contract;
-- local Threat Intelligence provider;
-- multi-provider Threat Intelligence service;
-- environment-variable configuration;
-- VirusTotal API key configuration;
-- AbuseIPDB API key configuration;
-- VirusTotal provider configuration;
-- VirusTotal HTTP session configuration;
-- VirusTotal authentication headers;
-- VirusTotal IP report requests;
-- VirusTotal request URL generation;
-- VirusTotal request timeouts;
-- VirusTotal response normalization;
-- VirusTotal malicious and non-malicious result handling;
-- VirusTotal zero-analysis handling;
-- VirusTotal HTTP error handling;
-- VirusTotal authentication failures;
-- VirusTotal rate-limit failures;
-- VirusTotal server errors;
-- VirusTotal connection failures;
-- VirusTotal malformed JSON;
-- VirusTotal unexpected response structures;
-- AbuseIPDB provider configuration;
-- AbuseIPDB HTTP session configuration;
-- AbuseIPDB authentication headers;
-- AbuseIPDB `/check` endpoint;
-- AbuseIPDB `maxAgeInDays`;
-- AbuseIPDB response normalization;
-- AbuseIPDB malicious threshold behavior;
-- AbuseIPDB abuse score validation;
-- AbuseIPDB timeout handling;
-- AbuseIPDB connection failures;
-- AbuseIPDB authentication failures;
-- AbuseIPDB plan-limit failures;
-- AbuseIPDB rate-limit failures;
-- AbuseIPDB parameter validation failures;
-- AbuseIPDB server errors;
-- AbuseIPDB malformed JSON;
-- AbuseIPDB unexpected response structures;
-- multi-provider behavior using VirusTotal and AbuseIPDB provider types;
-- Threat Intelligence provider failure isolation;
-- continuation after controlled provider failures;
-- preservation of valid results when another provider fails;
-- complete provider-failure handling;
+- Threat Intelligence models;
+- provider abstraction;
+- local deterministic provider;
+- VirusTotal integration;
+- AbuseIPDB integration;
+- HTTP timeout handling;
+- connection failures;
+- authentication errors;
+- rate limits;
+- malformed JSON;
+- unexpected API structures;
+- provider failure isolation;
+- partial Threat Intelligence results;
+- complete provider failures;
 - unexpected exception propagation;
-- multi-provider lookup status;
-- successful lookup detection;
-- partial lookup detection;
-- empty lookup-state behavior;
-- empty indicator validation;
-- whitespace-only indicator validation;
+- lookup status tracking;
 - in-memory Threat Intelligence caching;
-- cache storage;
-- cache retrieval;
-- cache overwrites;
-- cache clearing;
-- indicator cache normalization;
-- configurable cache TTL;
-- invalid cache TTL rejection;
+- cache hits and misses;
+- configurable TTL;
 - cache expiration;
-- exact TTL expiration boundary;
-- expired-entry removal;
-- cache-aware `contains()` behavior;
-- cache hits;
-- cache misses;
-- duplicate provider request reduction;
-- multi-provider cache behavior;
-- cache expiration followed by provider retry;
+- cache normalization;
+- duplicate provider request prevention;
+- cache retry behavior;
 - successful-result caching;
 - partial-result cache prevention;
 - failed-result cache prevention;
-- empty-result cache prevention;
-- provider retries after partial enrichment;
-- provider retries after complete enrichment failure.
+- RiskAssessment construction;
+- RiskAssessment immutability;
+- risk score validation;
+- confidence validation;
+- indicator normalization;
+- LOW severity boundaries;
+- MEDIUM severity boundaries;
+- HIGH severity boundaries;
+- CRITICAL severity boundaries;
+- base multi-provider scoring;
+- deterministic half-up rounding;
+- mixed-indicator rejection;
+- invalid provider score rejection;
+- confidence-weighted scoring;
+- zero-confidence handling;
+- weighted-score fallback behavior;
+- global confidence calculation;
+- explainable risk reasons;
+- complete Risk Assessment generation;
+- single-provider Risk Assessment;
+- multi-provider Risk Assessment;
+- ThreatIntelLookupResult integration;
+- partial-enrichment Risk Assessment;
+- confidence reduction for incomplete provider coverage;
+- provider-error preservation in Risk Assessment reasons;
+- rejection of Risk Assessment without usable Threat Intelligence.
 
 The project follows the principle that new functionality must be covered by automated tests before development moves on to the next stage.
 
@@ -2044,13 +2173,13 @@ The goal is to build a system where each component can be understood, tested, re
 
 Implemented:
 
-- Python project structure.
-- Virtual environment.
-- Git repository.
-- GitHub repository.
-- `.gitignore`.
-- `pyproject.toml`.
-- editable Python package.
+- Python project structure;
+- virtual environment;
+- Git repository;
+- GitHub repository;
+- `.gitignore`;
+- `pyproject.toml`;
+- editable Python package;
 - pytest testing environment.
 
 ### IOC Detection
@@ -2108,48 +2237,60 @@ Implemented:
 - deterministic local provider;
 - multi-provider `ThreatIntelService`;
 - common Threat Intelligence exception hierarchy;
-- VirusTotal provider;
-- VirusTotal API v3 IP lookup;
-- VirusTotal response normalization;
-- VirusTotal timeout handling;
-- VirusTotal HTTP error handling;
-- VirusTotal rate-limit handling;
-- VirusTotal authentication error handling;
-- VirusTotal connection error handling;
-- VirusTotal JSON validation;
-- VirusTotal unexpected response handling;
-- AbuseIPDB provider;
-- AbuseIPDB API v2 `/check` integration;
-- AbuseIPDB response normalization;
-- AbuseIPDB abuse score validation;
-- AbuseIPDB timeout handling;
-- AbuseIPDB HTTP error handling;
-- AbuseIPDB authentication error handling;
-- AbuseIPDB rate-limit handling;
-- AbuseIPDB request validation;
-- AbuseIPDB JSON validation;
-- AbuseIPDB unexpected response handling;
-- multi-provider Threat Intelligence compatibility;
+- VirusTotal API v3 integration;
+- AbuseIPDB API v2 integration;
+- provider response normalization;
+- timeout handling;
+- HTTP error handling;
+- rate-limit handling;
+- authentication handling;
+- connection-error handling;
+- malformed JSON handling;
+- unexpected response handling;
 - provider failure isolation;
 - partial-result preservation;
 - provider-error preservation;
 - complete/partial lookup-state tracking;
 - unexpected exception propagation;
-- empty indicator validation;
-- `ThreatIntelCache`;
-- in-memory enrichment caching;
+- indicator validation;
+- in-memory Threat Intelligence caching;
 - configurable cache TTL;
 - monotonic expiration tracking;
-- automatic removal of accessed expired entries;
 - cache integration with `ThreatIntelService`;
 - cache hit and miss handling;
 - duplicate provider lookup reduction;
-- safe cache policy;
 - complete-result caching;
 - partial-result cache prevention;
 - failed-result cache prevention;
 - retry behavior after partial or failed enrichment;
 - provider re-query after cache expiration.
+
+### Risk Assessment
+
+Implemented:
+
+- `RiskAssessment`;
+- `RiskSeverity`;
+- immutable risk results;
+- score validation;
+- confidence validation;
+- indicator normalization;
+- automatic severity classification;
+- LOW / MEDIUM / HIGH / CRITICAL policy;
+- base multi-provider score aggregation;
+- confidence-weighted risk scoring;
+- deterministic half-up rounding;
+- Threat Intelligence score validation;
+- Threat Intelligence confidence validation;
+- global Risk Assessment confidence;
+- explainable provider-derived reasons;
+- automated `RiskAssessment` creation;
+- `ThreatIntelLookupResult` integration;
+- complete lookup assessment;
+- partial lookup assessment;
+- provider-coverage confidence adjustment;
+- provider error preservation in reasons;
+- rejection of assessment when no usable Threat Intelligence exists.
 
 ---
 
@@ -2170,12 +2311,14 @@ Planned development areas include:
 
 ### Risk Assessment
 
-- multi-provider signal aggregation;
-- risk scoring;
-- confidence scoring;
-- severity classification;
-- provider weighting;
-- explainable scoring decisions.
+- provider-specific trust weighting;
+- configurable severity thresholds;
+- configurable scoring policies;
+- event-context risk signals;
+- behavioral risk signals;
+- asset/context awareness;
+- richer evidence explanations;
+- risk-policy configuration.
 
 ### Detection Engineering
 
@@ -2192,6 +2335,7 @@ Planned development areas include:
 - IOC history;
 - event history;
 - enrichment history;
+- Risk Assessment history;
 - alert history;
 - audit trail.
 
@@ -2200,6 +2344,7 @@ Planned development areas include:
 - normalized alert model;
 - alert deduplication;
 - configurable severity thresholds;
+- Risk Assessment to alert conversion;
 - notification integrations.
 
 ### Defensive Response
@@ -2217,6 +2362,7 @@ Planned development areas include:
 - FastAPI;
 - event endpoints;
 - IOC endpoints;
+- Risk Assessment endpoints;
 - alert endpoints;
 - health endpoints;
 - response-control endpoints.
@@ -2248,14 +2394,19 @@ The project prioritizes:
 - controlled external enrichment;
 - protection of credentials;
 - auditability;
+- explainable risk decisions;
 - human oversight;
 - dry-run execution before active remediation.
 
 External API keys are never intended to be stored directly in source code or committed to the repository.
 
-Future active-response capabilities will be designed so that detection and enrichment do not automatically imply remediation.
+A missing or failed Threat Intelligence lookup is not interpreted as evidence that an indicator is safe.
 
-A missing or failed Threat Intelligence lookup is not automatically interpreted as evidence that an indicator is safe.
+Risk Assessment and future automated response are intentionally separated.
+
+A high Risk Score will not automatically imply remediation.
+
+Future active-response capabilities will require explicit defensive policy and authorization.
 
 ---
 
@@ -2274,12 +2425,15 @@ Current limitations include:
 - Partial Threat Intelligence results are intentionally not cached.
 - Failed Threat Intelligence lookups are intentionally not cached.
 - Expired cache entries are removed when accessed rather than through a background cleanup process.
-- SentinelFlow-specific score and confidence values are not probabilities.
-- Provider scores are not yet combined into a final risk score.
-- No final multi-provider risk engine exists yet.
-- No provider weighting system exists yet.
-- No final severity classification engine exists yet.
-- No behavioral detection engine exists yet.
+- Current risk scoring is based exclusively on normalized Threat Intelligence signals.
+- Provider-specific trust weighting is not yet implemented.
+- Severity thresholds are currently hard-coded SentinelFlow policy.
+- Global confidence is currently based on provider confidence and lookup coverage.
+- Partial enrichment confidence assumes each attempted provider represents one unit of coverage.
+- Risk reasons currently describe provider-level signals and provider errors.
+- Behavioral and event-context signals are not yet included in the final Risk Score.
+- Asset criticality is not yet included in Risk Assessment.
+- SentinelFlow risk scores and confidence values are internal metrics, not statistical probabilities.
 - No persistent database exists yet.
 - No production alerting system exists yet.
 - No active defensive response is currently performed.
