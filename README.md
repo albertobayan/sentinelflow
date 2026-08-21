@@ -14,7 +14,7 @@ The goal of the project is to simulate a modular SOC/SOAR workflow capable of in
 
 Current development stage:
 
-**Log Ingestion, Event Normalization & Threat Intelligence Enrichment**
+**Log Ingestion, Event Normalization & Multi-Provider Threat Intelligence Enrichment**
 
 Currently implemented:
 
@@ -30,8 +30,12 @@ Currently implemented:
 - Modular Threat Intelligence architecture.
 - Local deterministic Threat Intelligence provider.
 - VirusTotal API v3 integration.
+- AbuseIPDB API v2 integration.
+- Multi-provider Threat Intelligence.
 - Threat Intelligence normalization.
-- External API error handling.
+- Provider-specific error handling.
+- External API timeout and connection handling.
+- API authentication and rate-limit handling.
 
 ---
 
@@ -379,7 +383,7 @@ SecurityEvent source = nginx
 IOC source = nginx
 ```
 
-This provides the foundation for future event enrichment, scoring and detection logic.
+Event processing also connects security events with IP classification, allowlisting and Threat Intelligence enrichment.
 
 ---
 
@@ -495,7 +499,10 @@ The current implementation includes:
 - `LocalThreatIntelProvider`
 - `ThreatIntelService`
 - `VirusTotalProvider`
-- Threat Intelligence-specific exceptions
+- `AbuseIPDBProvider`
+- `ThreatIntelError`
+- `VirusTotalError`
+- `AbuseIPDBError`
 - integration with the IP enrichment policy
 
 Architecture:
@@ -503,22 +510,22 @@ Architecture:
 ```text
                          ThreatIntelProvider
                                 │
-              ┌─────────────────┼─────────────────┐
-              │                 │                 │
-            Local          VirusTotal       Future Provider
-           Provider         Provider
-              │                 │
-              ▼                 ▼
-       ThreatIntelResult ThreatIntelResult
-              │                 │
-              └─────────┬───────┘
-                        ↓
-               ThreatIntelService
+              ┌─────────────────┼──────────────────┐
+              │                 │                  │
+            Local          VirusTotal          AbuseIPDB
+           Provider         Provider            Provider
+              │                 │                  │
+              ▼                 ▼                  ▼
+       ThreatIntelResult ThreatIntelResult ThreatIntelResult
+              │                 │                  │
+              └─────────────────┼──────────────────┘
+                                ↓
+                       ThreatIntelService
 ```
 
 The rest of SentinelFlow does not need to understand each provider's native response format.
 
-Every provider must normalize its result into the same internal model.
+Every provider normalizes its data into the same internal model.
 
 ---
 
@@ -632,7 +639,7 @@ Provider aggregation and final risk decisions are intentionally separate respons
 
 ## Threat Intelligence Enrichment Flow
 
-The event processing pipeline can now make an enrichment decision and invoke Threat Intelligence only when appropriate.
+The event processing pipeline can make an enrichment decision and invoke Threat Intelligence only when appropriate.
 
 ```text
 SecurityEvent
@@ -668,7 +675,7 @@ SentinelFlow supports external IP reputation enrichment through the **VirusTotal
 
 The integration is implemented through the modular Threat Intelligence architecture, allowing VirusTotal to operate as a `ThreatIntelProvider` without coupling the rest of the application directly to the external API.
 
-### Current VirusTotal flow
+### Current VirusTotal Flow
 
 ```text
 SecurityEvent
@@ -734,7 +741,7 @@ confidence
 
 The current normalization rules are internal SentinelFlow rules.
 
-### Malicious flag
+### Malicious Flag
 
 Currently:
 
@@ -804,7 +811,7 @@ A dedicated risk engine will be implemented later in the project.
 
 ## VirusTotal Error Handling
 
-External services can fail, so the VirusTotal integration includes defensive error handling.
+The VirusTotal integration includes defensive error handling for external failures.
 
 Current cases include:
 
@@ -846,20 +853,270 @@ This prevents low-level HTTP implementation details from leaking throughout the 
 
 ---
 
+## AbuseIPDB Integration
+
+SentinelFlow also supports external IP reputation enrichment through the **AbuseIPDB API v2**.
+
+The provider follows the same Threat Intelligence abstraction used by VirusTotal.
+
+### Current AbuseIPDB Flow
+
+```text
+SecurityEvent
+    ↓
+Source IP
+    ↓
+IP Classification
+    ↓
+Allowlist Check
+    ↓
+Enrichment Policy
+    ↓
+ThreatIntelService
+    ↓
+AbuseIPDBProvider
+    ↓
+AbuseIPDB API v2
+    ↓
+/check
+    ↓
+abuseConfidenceScore
+    ↓
+SentinelFlow normalization
+    ↓
+ThreatIntelResult
+```
+
+### AbuseIPDB Provider
+
+The `AbuseIPDBProvider` currently:
+
+- authenticates using an AbuseIPDB API key;
+- uses the AbuseIPDB API v2;
+- queries the `/check` endpoint;
+- uses a reusable `requests.Session`;
+- sends the API key through the `Key` HTTP header;
+- requests JSON responses;
+- uses HTTP request timeouts;
+- supports configurable `maxAgeInDays`;
+- validates the allowed age range;
+- reads `abuseConfidenceScore`;
+- validates returned abuse scores;
+- normalizes AbuseIPDB data into `ThreatIntelResult`;
+- handles malformed and unexpected responses;
+- converts API failures into SentinelFlow-specific exceptions.
+
+---
+
+## AbuseIPDB Normalization
+
+AbuseIPDB returns an:
+
+```text
+abuseConfidenceScore
+```
+
+in the range:
+
+```text
+0 ───────────────────────── 100
+```
+
+SentinelFlow currently maps that value directly into its internal score:
+
+```text
+AbuseIPDB abuseConfidenceScore
+              ↓
+      SentinelFlow score
+```
+
+For example:
+
+```text
+abuseConfidenceScore = 80
+→ score = 80
+```
+
+### Malicious Flag
+
+Current SentinelFlow policy:
+
+```text
+score < 50
+→ malicious = False
+
+score >= 50
+→ malicious = True
+```
+
+This threshold is a **SentinelFlow-specific normalization policy**.
+
+It should not be interpreted as an official AbuseIPDB statement that every IP address with a score of 50 or greater is definitively malicious.
+
+### Confidence
+
+Current normalized AbuseIPDB results use:
+
+```text
+confidence = 100
+```
+
+when a valid score has been successfully retrieved and processed.
+
+This represents successful interpretation of the external score.
+
+It does **not** represent absolute certainty that the indicator is malicious or safe.
+
+This model is expected to become more sophisticated when the dedicated risk and confidence engine is introduced.
+
+---
+
+## AbuseIPDB Error Handling
+
+The AbuseIPDB integration includes defensive error handling.
+
+Current cases include:
+
+```text
+Timeout
+→ AbuseIPDBError("AbuseIPDB request timed out")
+
+Connection failure
+→ AbuseIPDBError("Could not connect to AbuseIPDB")
+
+HTTP 401
+→ AbuseIPDBError("AbuseIPDB rejected the API key")
+
+HTTP 402
+→ AbuseIPDBError("AbuseIPDB plan limit exceeded")
+
+HTTP 403
+→ AbuseIPDBError("AbuseIPDB access forbidden")
+
+HTTP 422
+→ AbuseIPDBError(
+    "AbuseIPDB rejected the request parameters"
+)
+
+HTTP 429
+→ AbuseIPDBError("AbuseIPDB rate limit exceeded")
+
+HTTP 5xx
+→ AbuseIPDBError("AbuseIPDB service error")
+
+Other request failures
+→ AbuseIPDBError("AbuseIPDB request failed")
+
+Invalid JSON
+→ AbuseIPDBError("AbuseIPDB returned invalid JSON")
+
+Unexpected API structure
+→ AbuseIPDBError(
+    "AbuseIPDB response has an unexpected structure"
+)
+
+Invalid abuse score
+→ AbuseIPDBError(
+    "AbuseIPDB returned an invalid abuse score"
+)
+```
+
+AbuseIPDB-specific exceptions inherit from the common Threat Intelligence exception hierarchy.
+
+---
+
+## Threat Intelligence Exception Hierarchy
+
+SentinelFlow does not expose raw external-library errors throughout the whole application.
+
+Current exception structure:
+
+```text
+ThreatIntelError
+      │
+      ├── VirusTotalError
+      │
+      └── AbuseIPDBError
+```
+
+This provides a common abstraction for external Threat Intelligence failures while still allowing provider-specific handling when necessary.
+
+---
+
+## Multi-Provider Threat Intelligence
+
+SentinelFlow can now operate with multiple Threat Intelligence providers through the same service.
+
+Current providers:
+
+```text
+LocalThreatIntelProvider
+VirusTotalProvider
+AbuseIPDBProvider
+```
+
+Conceptually:
+
+```text
+Indicator
+    ↓
+ThreatIntelService
+    │
+    ├── VirusTotalProvider
+    │       ↓
+    │   VirusTotal API
+    │       ↓
+    │   ThreatIntelResult
+    │
+    └── AbuseIPDBProvider
+            ↓
+        AbuseIPDB API
+            ↓
+        ThreatIntelResult
+```
+
+Both external services use completely different APIs and reputation models.
+
+However, the rest of SentinelFlow receives a consistent structure:
+
+```text
+ThreatIntelResult
+├── indicator
+├── provider
+├── malicious
+├── score
+└── confidence
+```
+
+This is one of the main architectural goals of the project:
+
+```text
+Provider-specific API format
+            ↓
+Provider normalization
+            ↓
+Common SentinelFlow model
+```
+
+Provider aggregation and final security risk decisions remain separate responsibilities.
+
+---
+
 ## API Key Configuration
 
-VirusTotal credentials are loaded from environment variables using `python-dotenv`.
+External provider credentials are loaded from environment variables using `python-dotenv`.
 
-Create a local file:
+Create a local:
 
 ```text
 .env
 ```
 
-containing:
+with:
 
 ```text
 VIRUSTOTAL_API_KEY=your_real_api_key
+ABUSEIPDB_API_KEY=your_real_api_key
 ```
 
 The `.env` file must remain local and is excluded from Git.
@@ -876,23 +1133,26 @@ Example:
 
 ```text
 VIRUSTOTAL_API_KEY=your_api_key_here
+ABUSEIPDB_API_KEY=your_api_key_here
 ```
 
-The real key is loaded through SentinelFlow configuration rather than being embedded directly in Python source code.
-
-Conceptually:
+Configuration flow:
 
 ```text
 .env
  ↓
 config.py
- ↓
-VIRUSTOTAL_API_KEY
- ↓
-VirusTotalProvider
- ↓
-x-apikey HTTP header
+ │
+ ├── VIRUSTOTAL_API_KEY
+ │        ↓
+ │   VirusTotalProvider
+ │
+ └── ABUSEIPDB_API_KEY
+          ↓
+     AbuseIPDBProvider
 ```
+
+Secrets are never intended to be embedded directly inside Python source code.
 
 ---
 
@@ -1036,6 +1296,7 @@ sentinelflow/
 │       │
 │       └── threat_intel/
 │           ├── __init__.py
+│           ├── abuseipdb_provider.py
 │           ├── exceptions.py
 │           ├── local_provider.py
 │           ├── provider.py
@@ -1043,6 +1304,7 @@ sentinelflow/
 │           └── virustotal_provider.py
 │
 ├── tests/
+│   ├── test_abuseipdb_provider.py
 │   ├── test_config.py
 │   ├── test_event_processor.py
 │   ├── test_ioc_detection.py
@@ -1079,7 +1341,7 @@ Run the complete test suite:
 pytest -v
 ```
 
-If pytest cache/temp permissions are problematic in the current Windows environment, the test suite can be executed with:
+If pytest cache/temp permissions are problematic in the current Windows environment, the suite can be executed with:
 
 ```powershell
 pytest -v --basetemp=.\tmp -p no:cacheprovider
@@ -1101,6 +1363,18 @@ Run only VirusTotal tests:
 
 ```powershell
 pytest tests/test_virustotal_provider.py -v -p no:cacheprovider
+```
+
+Run only AbuseIPDB tests:
+
+```powershell
+pytest tests/test_abuseipdb_provider.py -v -p no:cacheprovider
+```
+
+Run configuration tests:
+
+```powershell
+pytest tests/test_config.py -v -p no:cacheprovider
 ```
 
 Filter tests:
@@ -1157,22 +1431,42 @@ Tests currently cover areas including:
 - local Threat Intelligence provider;
 - multi-provider Threat Intelligence service;
 - environment-variable configuration;
+- VirusTotal API key configuration;
+- AbuseIPDB API key configuration;
 - VirusTotal provider configuration;
 - VirusTotal HTTP session configuration;
-- API key header configuration;
-- IP report requests;
-- request URL generation;
-- request timeouts;
+- VirusTotal authentication headers;
+- VirusTotal IP report requests;
+- VirusTotal request URL generation;
+- VirusTotal request timeouts;
 - VirusTotal response normalization;
-- malicious and non-malicious result handling;
-- zero-analysis handling;
-- HTTP error handling;
-- API authentication errors;
-- rate-limit errors;
-- server errors;
-- connection failures;
-- malformed JSON;
-- unexpected API response structures.
+- VirusTotal malicious and non-malicious result handling;
+- VirusTotal zero-analysis handling;
+- VirusTotal HTTP error handling;
+- VirusTotal authentication failures;
+- VirusTotal rate-limit failures;
+- VirusTotal server errors;
+- VirusTotal connection failures;
+- VirusTotal malformed JSON;
+- VirusTotal unexpected response structures;
+- AbuseIPDB provider configuration;
+- AbuseIPDB HTTP session configuration;
+- AbuseIPDB authentication headers;
+- AbuseIPDB `/check` endpoint;
+- AbuseIPDB `maxAgeInDays`;
+- AbuseIPDB response normalization;
+- AbuseIPDB malicious threshold behavior;
+- AbuseIPDB abuse score validation;
+- AbuseIPDB timeout handling;
+- AbuseIPDB connection failures;
+- AbuseIPDB authentication failures;
+- AbuseIPDB plan-limit failures;
+- AbuseIPDB rate-limit failures;
+- AbuseIPDB parameter validation failures;
+- AbuseIPDB server errors;
+- AbuseIPDB malformed JSON;
+- AbuseIPDB unexpected response structures;
+- multi-provider behavior using VirusTotal and AbuseIPDB provider types.
 
 The project follows the principle that new functionality must be covered by automated tests before development moves on to the next stage.
 
@@ -1274,16 +1568,29 @@ Implemented:
 - abstract `ThreatIntelProvider`;
 - deterministic local provider;
 - multi-provider `ThreatIntelService`;
+- common Threat Intelligence exception hierarchy;
 - VirusTotal provider;
 - VirusTotal API v3 IP lookup;
-- external response normalization;
-- timeout handling;
-- HTTP error handling;
-- rate-limit handling;
-- API authentication error handling;
-- connection error handling;
-- JSON validation;
-- unexpected response handling.
+- VirusTotal response normalization;
+- VirusTotal timeout handling;
+- VirusTotal HTTP error handling;
+- VirusTotal rate-limit handling;
+- VirusTotal authentication error handling;
+- VirusTotal connection error handling;
+- VirusTotal JSON validation;
+- VirusTotal unexpected response handling;
+- AbuseIPDB provider;
+- AbuseIPDB API v2 `/check` integration;
+- AbuseIPDB response normalization;
+- AbuseIPDB abuse score validation;
+- AbuseIPDB timeout handling;
+- AbuseIPDB HTTP error handling;
+- AbuseIPDB authentication error handling;
+- AbuseIPDB rate-limit handling;
+- AbuseIPDB request validation;
+- AbuseIPDB JSON validation;
+- AbuseIPDB unexpected response handling;
+- multi-provider Threat Intelligence compatibility.
 
 ---
 
@@ -1291,20 +1598,24 @@ Implemented:
 
 Planned development areas include:
 
-### Threat Intelligence
+### Threat Intelligence Hardening
 
-- AbuseIPDB integration;
-- multiple real providers;
 - provider failure isolation;
+- partial results when one provider fails;
 - enrichment caching;
-- additional IOC enrichment.
+- cache expiration;
+- reduced duplicate API requests;
+- additional IOC enrichment;
+- additional Threat Intelligence providers.
 
 ### Risk Assessment
 
+- multi-provider signal aggregation;
 - risk scoring;
 - confidence scoring;
 - severity classification;
-- multi-provider signal aggregation.
+- provider weighting;
+- explainable scoring decisions.
 
 ### Detection Engineering
 
@@ -1395,8 +1706,12 @@ Current limitations include:
 - Nginx is currently the primary implemented log source.
 - Threat Intelligence enrichment currently focuses on IP addresses.
 - The local Threat Intelligence provider contains simulated development data.
-- VirusTotal is the first implemented external provider.
+- VirusTotal and AbuseIPDB are the current external providers.
+- Provider failures are not yet isolated at the `ThreatIntelService` level.
+- A failing provider can still interrupt a multi-provider lookup.
+- External enrichment results are not cached yet.
 - SentinelFlow-specific score and confidence values are not probabilities.
+- Provider scores are not yet combined into a final risk score.
 - No final multi-provider risk engine exists yet.
 - No behavioral detection engine exists yet.
 - No persistent database exists yet.

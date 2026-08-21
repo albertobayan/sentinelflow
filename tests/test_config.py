@@ -1,4 +1,7 @@
-from sentinelflow.config import get_virustotal_api_key
+from sentinelflow.config import (
+    get_abuseipdb_api_key,
+    get_virustotal_api_key,
+)
 
 
 def test_get_virustotal_api_key(monkeypatch):
@@ -26,3 +29,30 @@ def test_get_virustotal_api_key_returns_none_when_empty(monkeypatch):
     )
 
     assert get_virustotal_api_key() is None
+    
+
+def test_get_abuseipdb_api_key(monkeypatch):
+    monkeypatch.setenv(
+        "ABUSEIPDB_API_KEY",
+        "test-abuseipdb-key",
+    )
+
+    assert get_abuseipdb_api_key() == "test-abuseipdb-key"
+    
+
+def test_get_abuseipdb_api_key_returns_none_when_missing(monkeypatch):
+    monkeypatch.delenv(
+        "ABUSEIPDB_API_KEY",
+        raising=False,
+    )
+
+    assert get_abuseipdb_api_key() is None
+    
+
+def test_get_abuseipdb_api_key_returns_none_when_empty(monkeypatch):
+    monkeypatch.setenv(
+        "ABUSEIPDB_API_KEY",
+        "",
+    )
+
+    assert get_abuseipdb_api_key() is None

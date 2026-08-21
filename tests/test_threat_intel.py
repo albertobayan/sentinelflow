@@ -4,6 +4,8 @@ from sentinelflow.models.threat_intel import ThreatIntelResult
 from sentinelflow.threat_intel.provider import ThreatIntelProvider
 from sentinelflow.threat_intel.local_provider import LocalThreatIntelProvider
 from sentinelflow.threat_intel.service import ThreatIntelService
+from sentinelflow.threat_intel.abuseipdb_provider import AbuseIPDBProvider
+from sentinelflow.threat_intel.virustotal_provider import VirusTotalProvider
 
 
 def test_threat_intel_result():
@@ -184,3 +186,49 @@ def test_threat_intel_service_preserves_indicator():
         result.indicator == "8.8.8.8"
         for result in results
     )
+
+
+def test_threat_intel_service_supports_real_provider_types(monkeypatch):
+    virustotal = VirusTotalProvider("test-vt-key")
+    abuseipdb = AbuseIPDBProvider("test-abuse-key")
+
+    monkeypatch.setattr(
+        virustotal,
+        "lookup",
+        lambda indicator: ThreatIntelResult(
+            indicator=indicator,
+            provider="virustotal",
+            malicious=True,
+            score=25,
+            confidence=90,
+        ),
+    )
+
+    monkeypatch.setattr(
+        abuseipdb,
+        "lookup",
+        lambda indicator: ThreatIntelResult(
+            indicator=indicator,
+            provider="abuseipdb",
+            malicious=True,
+            score=80,
+            confidence=100,
+        ),
+    )
+
+    service = ThreatIntelService(
+        providers=[
+            virustotal,
+            abuseipdb,
+        ]
+    )
+
+    results = service.lookup("9.9.9.9")
+
+    assert len(results) == 2
+
+    assert results[0].provider == "virustotal"
+    assert results[0].score == 25
+
+    assert results[1].provider == "abuseipdb"
+    assert results[1].score == 80
