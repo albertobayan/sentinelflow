@@ -4,7 +4,7 @@
 
 SentinelFlow is a defensive cybersecurity automation project built in Python.
 
-The goal of the project is to simulate a modular SOC/SOAR workflow capable of ingesting security events, detecting indicators of compromise, applying enrichment policies, querying external threat intelligence providers, assessing risk, generating alerts and supporting controlled defensive response workflows.
+The goal of the project is to simulate a modular SOC/SOAR workflow capable of ingesting security events, detecting indicators of compromise, applying enrichment policies, querying external Threat Intelligence providers, assessing risk, generating alerts and supporting controlled defensive response workflows.
 
 ---
 
@@ -14,7 +14,7 @@ The goal of the project is to simulate a modular SOC/SOAR workflow capable of in
 
 Current development stage:
 
-**Log Ingestion, Event Normalization & Multi-Provider Threat Intelligence Enrichment**
+**Log Ingestion, Event Normalization & Resilient Multi-Provider Threat Intelligence Enrichment**
 
 Currently implemented:
 
@@ -36,6 +36,14 @@ Currently implemented:
 - Provider-specific error handling.
 - External API timeout and connection handling.
 - API authentication and rate-limit handling.
+- Provider failure isolation.
+- Partial Threat Intelligence result preservation.
+- Threat Intelligence lookup status tracking.
+- In-memory Threat Intelligence caching.
+- Configurable cache TTL.
+- Time-based cache expiration.
+- Safe caching policy for complete enrichment results.
+- Automatic provider retries after partial or failed enrichment.
 
 ---
 
@@ -79,11 +87,15 @@ Enrichment Policy
     ↓
 ThreatIntelService
     ↓
+ThreatIntelCache
+    ↓
 ThreatIntelProvider
     ↓
 External / Local Threat Intelligence
     ↓
 ThreatIntelResult
+    ↓
+ThreatIntelLookupResult
     ↓
 Future Risk Assessment
     ↓
@@ -495,11 +507,14 @@ SentinelFlow includes a modular Threat Intelligence layer designed to support mu
 The current implementation includes:
 
 - `ThreatIntelResult`
+- `ThreatIntelLookupResult`
 - `ThreatIntelProvider`
 - `LocalThreatIntelProvider`
-- `ThreatIntelService`
 - `VirusTotalProvider`
 - `AbuseIPDBProvider`
+- `ThreatIntelService`
+- `ThreatIntelCache`
+- `CacheEntry`
 - `ThreatIntelError`
 - `VirusTotalError`
 - `AbuseIPDBError`
@@ -508,30 +523,36 @@ The current implementation includes:
 Architecture:
 
 ```text
-                         ThreatIntelProvider
-                                │
-              ┌─────────────────┼──────────────────┐
-              │                 │                  │
-            Local          VirusTotal          AbuseIPDB
-           Provider         Provider            Provider
-              │                 │                  │
-              ▼                 ▼                  ▼
-       ThreatIntelResult ThreatIntelResult ThreatIntelResult
-              │                 │                  │
-              └─────────────────┼──────────────────┘
-                                ↓
-                       ThreatIntelService
+                            ThreatIntelService
+                                   │
+                    ┌──────────────┴──────────────┐
+                    │                             │
+                    ▼                             ▼
+            ThreatIntelCache              ThreatIntelProvider
+                                                  │
+                              ┌───────────────────┼───────────────────┐
+                              │                   │                   │
+                              ▼                   ▼                   ▼
+                            Local             VirusTotal          AbuseIPDB
+                           Provider             Provider            Provider
+                              │                   │                   │
+                              ▼                   ▼                   ▼
+                      ThreatIntelResult   ThreatIntelResult   ThreatIntelResult
+                              │                   │                   │
+                              └───────────────────┼───────────────────┘
+                                                  ↓
+                                      ThreatIntelLookupResult
 ```
 
 The rest of SentinelFlow does not need to understand each provider's native response format.
 
-Every provider normalizes its data into the same internal model.
+Every provider normalizes its data into the same internal result model.
 
 ---
 
 ## ThreatIntelResult
 
-Threat Intelligence data is represented using a normalized immutable model.
+Threat Intelligence data returned by an individual provider is represented using a normalized immutable model.
 
 Conceptually:
 
@@ -556,6 +577,95 @@ confidence
 ```
 
 This allows multiple Threat Intelligence providers to produce a consistent result even when their original APIs use completely different response formats.
+
+---
+
+## ThreatIntelLookupResult
+
+Multi-provider enrichment is represented through a higher-level lookup result.
+
+While `ThreatIntelResult` represents the result returned by a single provider, `ThreatIntelLookupResult` represents the state of the complete Threat Intelligence lookup.
+
+Conceptually:
+
+```python
+ThreatIntelLookupResult(
+    results=[
+        ThreatIntelResult(...),
+    ],
+    errors=[
+        "abuseipdb: AbuseIPDB request timed out",
+    ],
+)
+```
+
+Current fields:
+
+```text
+results
+errors
+```
+
+It also exposes lookup state through:
+
+```text
+successful
+partial
+```
+
+A successful lookup contains at least one result and no provider errors:
+
+```text
+results != []
+errors == []
+
+→ successful = True
+→ partial = False
+```
+
+A partial lookup contains usable Threat Intelligence results but also one or more provider failures:
+
+```text
+results != []
+errors != []
+
+→ successful = False
+→ partial = True
+```
+
+A complete provider failure contains no results:
+
+```text
+results == []
+errors != []
+
+→ successful = False
+→ partial = False
+```
+
+A lookup with no configured providers also has no results:
+
+```text
+results == []
+errors == []
+
+→ successful = False
+→ partial = False
+```
+
+This distinction allows SentinelFlow to differentiate between:
+
+```text
+A provider returned a legitimate low-risk result
+```
+
+and:
+
+```text
+Threat Intelligence could not be obtained
+```
+
+These situations are intentionally not treated as equivalent.
 
 ---
 
@@ -601,39 +711,125 @@ service = ThreatIntelService(
 )
 ```
 
-A lookup can then be performed through:
+A standard lookup can be performed through:
 
 ```python
 service.lookup(indicator)
 ```
 
-The service returns:
+and returns:
 
 ```text
 list[ThreatIntelResult]
 ```
 
-Architecture:
+For callers that also need provider failure information and lookup completeness, SentinelFlow exposes:
+
+```python
+service.lookup_with_status(indicator)
+```
+
+which returns:
+
+```text
+ThreatIntelLookupResult
+```
+
+The service also accepts an optional `ThreatIntelCache`:
+
+```python
+service = ThreatIntelService(
+    providers=[
+        provider_a,
+        provider_b,
+    ],
+    cache=cache,
+)
+```
+
+Conceptually:
 
 ```text
 Indicator
     ↓
 ThreatIntelService
-    │
-    ├── Provider A
-    │      ↓
-    │   Result A
-    │
-    ├── Provider B
-    │      ↓
-    │   Result B
-    │
-    └── Provider C
-           ↓
-        Result C
+    ↓
+Cache lookup
+    ↓
+┌─────────────────────────────┐
+│ Cached result available?    │
+├──────────────┬──────────────┤
+│ Yes          │ No           │
+│ ↓            │ ↓            │
+│ Return       │ Providers    │
+│              │ ↓            │
+│              │ Results      │
+└──────────────┴──────────────┘
 ```
 
-Provider aggregation and final risk decisions are intentionally separate responsibilities.
+Provider aggregation and final security risk decisions remain separate responsibilities.
+
+---
+
+## Provider Failure Isolation
+
+Threat Intelligence providers are isolated from each other at the service layer.
+
+A controlled failure from one provider does not prevent SentinelFlow from using results returned by other providers.
+
+For example:
+
+```text
+VirusTotal
+→ success
+
+AbuseIPDB
+→ timeout
+```
+
+can produce:
+
+```text
+results:
+    VirusTotal result
+
+errors:
+    abuseipdb: AbuseIPDB request timed out
+```
+
+Instead of failing the entire enrichment operation.
+
+Controlled provider failures derived from:
+
+```text
+ThreatIntelError
+```
+
+are isolated.
+
+The current hierarchy includes:
+
+```text
+ThreatIntelError
+      │
+      ├── VirusTotalError
+      │
+      └── AbuseIPDBError
+```
+
+Unexpected programming errors are intentionally **not** silently suppressed.
+
+For example:
+
+```text
+RuntimeError
+TypeError
+unexpected internal software bug
+```
+
+continue to propagate.
+
+This prevents the enrichment layer from hiding defects in SentinelFlow itself.
 
 ---
 
@@ -660,12 +856,281 @@ Enrichment Policy
 │ → ThreatIntelService        │
 └─────────────────────────────┘
                ↓
+        ThreatIntelCache
+               ↓
         ThreatIntelProvider
                ↓
         ThreatIntelResult
+               ↓
+     ThreatIntelLookupResult
 ```
 
 This means Threat Intelligence providers are not queried blindly for every address received by SentinelFlow.
+
+---
+
+## Threat Intelligence Cache
+
+SentinelFlow includes an in-memory cache for Threat Intelligence enrichment results.
+
+The cache reduces:
+
+- duplicate external API requests;
+- API quota consumption;
+- enrichment latency;
+- unnecessary dependency on external services;
+- exposure to provider rate limits.
+
+Conceptually:
+
+```text
+Indicator
+    ↓
+ThreatIntelService
+    ↓
+Cache lookup
+    │
+    ├── HIT
+    │     ↓
+    │   return cached result
+    │
+    └── MISS
+          ↓
+       providers
+          ↓
+       enrichment
+          ↓
+    successful?
+       │
+       ├── Yes → cache
+       └── No  → do not cache
+          ↓
+        return
+```
+
+### Cache Entries
+
+Cached data is stored as:
+
+```text
+indicator
+    ↓
+CacheEntry
+├── ThreatIntelLookupResult
+└── created_at
+```
+
+The cache currently exists only in memory.
+
+This means cached data is intentionally lost when the SentinelFlow process stops.
+
+No Redis, database-backed cache or external caching infrastructure is currently required.
+
+### Indicator Normalization
+
+Indicators are normalized with surrounding whitespace removed before cache access.
+
+Therefore:
+
+```text
+"9.9.9.9"
+```
+
+and:
+
+```text
+"   9.9.9.9   "
+```
+
+use the same cache key.
+
+Empty or whitespace-only indicators are rejected by the service before providers or cache storage are used.
+
+---
+
+## Cache TTL
+
+Cache entries use a configurable time-to-live.
+
+Default development TTL:
+
+```text
+300 seconds
+```
+
+Equivalent to:
+
+```text
+5 minutes
+```
+
+Custom values can be supplied:
+
+```python
+ThreatIntelCache(
+    ttl_seconds=60,
+)
+```
+
+Invalid TTL values are rejected.
+
+For example:
+
+```text
+TTL <= 0
+→ ValueError
+```
+
+SentinelFlow uses:
+
+```python
+time.monotonic()
+```
+
+for cache-age calculations.
+
+This avoids depending on the system wall clock, which can change because of:
+
+- clock synchronization;
+- manual clock changes;
+- NTP corrections;
+- daylight-saving adjustments.
+
+An entry is considered expired when:
+
+```text
+entry age >= TTL
+```
+
+Expired entries are removed when accessed.
+
+---
+
+## Cache Policy
+
+SentinelFlow intentionally caches only complete successful enrichment results.
+
+### Complete Success
+
+```text
+results != []
+errors == []
+
+→ successful = True
+→ CACHE
+```
+
+### Partial Enrichment
+
+```text
+results != []
+errors != []
+
+→ partial = True
+→ DO NOT CACHE
+```
+
+### Complete Provider Failure
+
+```text
+results == []
+errors != []
+
+→ DO NOT CACHE
+```
+
+### No Providers
+
+```text
+results == []
+errors == []
+
+→ DO NOT CACHE
+```
+
+This prevents temporary provider failures, timeouts, authentication problems or rate limits from being artificially extended by the local cache.
+
+For example:
+
+```text
+VirusTotal → timeout
+AbuseIPDB → timeout
+```
+
+does not create a cached failure.
+
+A subsequent lookup can therefore retry the providers.
+
+---
+
+## Cache Expiration & Retry Behavior
+
+When a valid cached result exists:
+
+```text
+lookup
+→ cache hit
+→ external providers are not queried
+```
+
+When the entry expires:
+
+```text
+lookup
+→ cache entry expired
+→ cache entry removed
+→ providers queried again
+→ new result generated
+```
+
+Partial and failed lookups are not cached, so the next lookup naturally retries the external providers.
+
+This prevents temporary external outages from becoming locally persistent failures.
+
+---
+
+## Score Zero vs Provider Failure
+
+A valid Threat Intelligence result with:
+
+```text
+score = 0
+```
+
+is not considered a provider failure.
+
+For example:
+
+```text
+AbuseIPDB
+→ valid HTTP response
+→ abuseConfidenceScore = 0
+```
+
+represents valid external data.
+
+This is fundamentally different from:
+
+```text
+AbuseIPDB
+→ timeout
+```
+
+where no Threat Intelligence result was obtained.
+
+Therefore SentinelFlow distinguishes:
+
+```text
+Provider answered and returned a low score
+```
+
+from:
+
+```text
+Provider could not be queried successfully
+```
+
+If all configured providers answer successfully, a complete lookup can be cached even when the returned scores are zero.
 
 ---
 
@@ -689,6 +1154,8 @@ Allowlist Check
 Enrichment Policy
     ↓
 ThreatIntelService
+    ↓
+ThreatIntelCache
     ↓
 VirusTotalProvider
     ↓
@@ -731,7 +1198,7 @@ undetected
 timeout
 ```
 
-SentinelFlow converts those external statistics into its internal fields:
+SentinelFlow converts relevant external statistics into its internal fields:
 
 ```text
 malicious
@@ -873,6 +1340,8 @@ Allowlist Check
 Enrichment Policy
     ↓
 ThreatIntelService
+    ↓
+ThreatIntelCache
     ↓
 AbuseIPDBProvider
     ↓
@@ -1045,7 +1514,7 @@ This provides a common abstraction for external Threat Intelligence failures whi
 
 ## Multi-Provider Threat Intelligence
 
-SentinelFlow can now operate with multiple Threat Intelligence providers through the same service.
+SentinelFlow can operate with multiple Threat Intelligence providers through the same service.
 
 Current providers:
 
@@ -1061,6 +1530,8 @@ Conceptually:
 Indicator
     ↓
 ThreatIntelService
+    ↓
+ThreatIntelCache
     │
     ├── VirusTotalProvider
     │       ↓
@@ -1073,11 +1544,16 @@ ThreatIntelService
         AbuseIPDB API
             ↓
         ThreatIntelResult
+             │
+             ↓
+    ThreatIntelLookupResult
 ```
 
-Both external services use completely different APIs and reputation models.
+Both external services use different APIs and reputation models.
 
-However, the rest of SentinelFlow receives a consistent structure:
+However, the rest of SentinelFlow receives consistent internal structures.
+
+Individual provider results use:
 
 ```text
 ThreatIntelResult
@@ -1088,6 +1564,16 @@ ThreatIntelResult
 └── confidence
 ```
 
+The complete multi-provider lookup uses:
+
+```text
+ThreatIntelLookupResult
+├── results
+├── errors
+├── successful
+└── partial
+```
+
 This is one of the main architectural goals of the project:
 
 ```text
@@ -1095,10 +1581,12 @@ Provider-specific API format
             ↓
 Provider normalization
             ↓
-Common SentinelFlow model
+Common SentinelFlow models
+            ↓
+Provider-independent processing
 ```
 
-Provider aggregation and final security risk decisions remain separate responsibilities.
+Final provider aggregation and risk decisions remain separate responsibilities.
 
 ---
 
@@ -1292,11 +1780,13 @@ sentinelflow/
 │       │   ├── ioc.py
 │       │   ├── ip_classification.py
 │       │   ├── security_event.py
-│       │   └── threat_intel.py
+│       │   ├── threat_intel.py
+│       │   └── threat_intel_lookup.py
 │       │
 │       └── threat_intel/
 │           ├── __init__.py
 │           ├── abuseipdb_provider.py
+│           ├── cache.py
 │           ├── exceptions.py
 │           ├── local_provider.py
 │           ├── provider.py
@@ -1316,6 +1806,8 @@ sentinelflow/
 │   ├── test_nginx_parser.py
 │   ├── test_security_event.py
 │   ├── test_threat_intel.py
+│   ├── test_threat_intel_cache.py
+│   ├── test_threat_intel_lookup.py
 │   ├── test_virustotal_provider.py
 │   └── test_watch.py
 │
@@ -1353,10 +1845,22 @@ Run only IOC tests:
 pytest tests/test_ioc_detection.py -v -p no:cacheprovider
 ```
 
-Run only Threat Intelligence tests:
+Run only Threat Intelligence service tests:
 
 ```powershell
 pytest tests/test_threat_intel.py -v -p no:cacheprovider
+```
+
+Run only Threat Intelligence lookup-result tests:
+
+```powershell
+pytest tests/test_threat_intel_lookup.py -v -p no:cacheprovider
+```
+
+Run only Threat Intelligence cache tests:
+
+```powershell
+pytest tests/test_threat_intel_cache.py -v -p no:cacheprovider
 ```
 
 Run only VirusTotal tests:
@@ -1466,7 +1970,41 @@ Tests currently cover areas including:
 - AbuseIPDB server errors;
 - AbuseIPDB malformed JSON;
 - AbuseIPDB unexpected response structures;
-- multi-provider behavior using VirusTotal and AbuseIPDB provider types.
+- multi-provider behavior using VirusTotal and AbuseIPDB provider types;
+- Threat Intelligence provider failure isolation;
+- continuation after controlled provider failures;
+- preservation of valid results when another provider fails;
+- complete provider-failure handling;
+- unexpected exception propagation;
+- multi-provider lookup status;
+- successful lookup detection;
+- partial lookup detection;
+- empty lookup-state behavior;
+- empty indicator validation;
+- whitespace-only indicator validation;
+- in-memory Threat Intelligence caching;
+- cache storage;
+- cache retrieval;
+- cache overwrites;
+- cache clearing;
+- indicator cache normalization;
+- configurable cache TTL;
+- invalid cache TTL rejection;
+- cache expiration;
+- exact TTL expiration boundary;
+- expired-entry removal;
+- cache-aware `contains()` behavior;
+- cache hits;
+- cache misses;
+- duplicate provider request reduction;
+- multi-provider cache behavior;
+- cache expiration followed by provider retry;
+- successful-result caching;
+- partial-result cache prevention;
+- failed-result cache prevention;
+- empty-result cache prevention;
+- provider retries after partial enrichment;
+- provider retries after complete enrichment failure.
 
 The project follows the principle that new functionality must be covered by automated tests before development moves on to the next stage.
 
@@ -1565,6 +2103,7 @@ Implemented:
 Implemented:
 
 - normalized `ThreatIntelResult`;
+- multi-provider `ThreatIntelLookupResult`;
 - abstract `ThreatIntelProvider`;
 - deterministic local provider;
 - multi-provider `ThreatIntelService`;
@@ -1590,7 +2129,27 @@ Implemented:
 - AbuseIPDB request validation;
 - AbuseIPDB JSON validation;
 - AbuseIPDB unexpected response handling;
-- multi-provider Threat Intelligence compatibility.
+- multi-provider Threat Intelligence compatibility;
+- provider failure isolation;
+- partial-result preservation;
+- provider-error preservation;
+- complete/partial lookup-state tracking;
+- unexpected exception propagation;
+- empty indicator validation;
+- `ThreatIntelCache`;
+- in-memory enrichment caching;
+- configurable cache TTL;
+- monotonic expiration tracking;
+- automatic removal of accessed expired entries;
+- cache integration with `ThreatIntelService`;
+- cache hit and miss handling;
+- duplicate provider lookup reduction;
+- safe cache policy;
+- complete-result caching;
+- partial-result cache prevention;
+- failed-result cache prevention;
+- retry behavior after partial or failed enrichment;
+- provider re-query after cache expiration.
 
 ---
 
@@ -1598,15 +2157,16 @@ Implemented:
 
 Planned development areas include:
 
-### Threat Intelligence Hardening
+### Threat Intelligence
 
-- provider failure isolation;
-- partial results when one provider fails;
-- enrichment caching;
-- cache expiration;
-- reduced duplicate API requests;
 - additional IOC enrichment;
-- additional Threat Intelligence providers.
+- domain enrichment;
+- URL enrichment;
+- hash enrichment;
+- provider-specific caching strategies;
+- additional Threat Intelligence providers;
+- richer provider failure metadata;
+- configurable Threat Intelligence settings.
 
 ### Risk Assessment
 
@@ -1695,6 +2255,8 @@ External API keys are never intended to be stored directly in source code or com
 
 Future active-response capabilities will be designed so that detection and enrichment do not automatically imply remediation.
 
+A missing or failed Threat Intelligence lookup is not automatically interpreted as evidence that an indicator is safe.
+
 ---
 
 ## Current Limitations
@@ -1707,12 +2269,16 @@ Current limitations include:
 - Threat Intelligence enrichment currently focuses on IP addresses.
 - The local Threat Intelligence provider contains simulated development data.
 - VirusTotal and AbuseIPDB are the current external providers.
-- Provider failures are not yet isolated at the `ThreatIntelService` level.
-- A failing provider can still interrupt a multi-provider lookup.
-- External enrichment results are not cached yet.
+- Threat Intelligence caching is currently process-local and in-memory.
+- Cache entries are stored at the complete lookup level rather than independently per provider.
+- Partial Threat Intelligence results are intentionally not cached.
+- Failed Threat Intelligence lookups are intentionally not cached.
+- Expired cache entries are removed when accessed rather than through a background cleanup process.
 - SentinelFlow-specific score and confidence values are not probabilities.
 - Provider scores are not yet combined into a final risk score.
 - No final multi-provider risk engine exists yet.
+- No provider weighting system exists yet.
+- No final severity classification engine exists yet.
 - No behavioral detection engine exists yet.
 - No persistent database exists yet.
 - No production alerting system exists yet.
