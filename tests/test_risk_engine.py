@@ -8,6 +8,10 @@ from sentinelflow.risk.engine import (
     assess_lookup_result,
     assess_risk,
 )
+from sentinelflow.models.behavior import (
+    BehaviorSignal,
+    BehaviorSignalType,
+)
 
 
 def test_assess_risk_builds_complete_assessment():
@@ -761,3 +765,329 @@ def test_partial_lookup_coverage_supports_multiple_successful_providers():
     )
 
     assert assessment.confidence == 68
+    
+
+def test_assess_risk_behavior_can_increase_score():
+    results = [
+        ThreatIntelResult(
+            indicator="203.0.113.10",
+            provider="virustotal",
+            malicious=True,
+            score=60,
+            confidence=90,
+        )
+    ]
+
+    signals = [
+        BehaviorSignal(
+            source_ip="203.0.113.10",
+            signal_type=(
+                BehaviorSignalType.DIRECTORY_SCANNING
+            ),
+            score=70,
+            event_count=11,
+            reason="11 unique HTTP paths requested",
+        )
+    ]
+
+    assessment = assess_risk(
+        results,
+        behavior_signals=signals,
+    )
+
+    assert assessment.score == 78
+    
+
+def test_assess_risk_behavior_can_raise_severity():
+    results = [
+        ThreatIntelResult(
+            indicator="203.0.113.10",
+            provider="virustotal",
+            malicious=True,
+            score=60,
+            confidence=90,
+        )
+    ]
+
+    signals = [
+        BehaviorSignal(
+            source_ip="203.0.113.10",
+            signal_type=(
+                BehaviorSignalType.DIRECTORY_SCANNING
+            ),
+            score=70,
+            event_count=11,
+            reason="11 unique HTTP paths requested",
+        )
+    ]
+
+    assessment = assess_risk(
+        results,
+        behavior_signals=signals,
+    )
+
+    assert assessment.score == 78
+    assert assessment.severity == RiskSeverity.CRITICAL
+    
+
+def test_assess_risk_uses_strongest_behavior_signal_only_for_uplift():
+    results = [
+        ThreatIntelResult(
+            indicator="203.0.113.10",
+            provider="virustotal",
+            malicious=True,
+            score=50,
+            confidence=90,
+        )
+    ]
+
+    signals = [
+        BehaviorSignal(
+            source_ip="203.0.113.10",
+            signal_type=(
+                BehaviorSignalType.REPEATED_AUTH_FAILURES
+            ),
+            score=50,
+            event_count=5,
+            reason=(
+                "5 authentication-related "
+                "HTTP failures detected"
+            ),
+        ),
+        BehaviorSignal(
+            source_ip="203.0.113.10",
+            signal_type=(
+                BehaviorSignalType.HIGH_404_RATE
+            ),
+            score=40,
+            event_count=10,
+            reason="10 HTTP 404 responses detected",
+        ),
+        BehaviorSignal(
+            source_ip="203.0.113.10",
+            signal_type=(
+                BehaviorSignalType.DIRECTORY_SCANNING
+            ),
+            score=70,
+            event_count=11,
+            reason="11 unique HTTP paths requested",
+        ),
+    ]
+
+    assessment = assess_risk(
+        results,
+        behavior_signals=signals,
+    )
+
+    assert assessment.score == 68
+    
+
+def test_assess_risk_preserves_all_behavior_reasons():
+    results = [
+        ThreatIntelResult(
+            indicator="203.0.113.10",
+            provider="virustotal",
+            malicious=False,
+            score=20,
+            confidence=90,
+        )
+    ]
+
+    signals = [
+        BehaviorSignal(
+            source_ip="203.0.113.10",
+            signal_type=(
+                BehaviorSignalType.HIGH_404_RATE
+            ),
+            score=40,
+            event_count=10,
+            reason="10 HTTP 404 responses detected",
+        ),
+        BehaviorSignal(
+            source_ip="203.0.113.10",
+            signal_type=(
+                BehaviorSignalType.DIRECTORY_SCANNING
+            ),
+            score=55,
+            event_count=8,
+            reason="8 unique HTTP paths requested",
+        ),
+    ]
+
+    assessment = assess_risk(
+        results,
+        behavior_signals=signals,
+    )
+
+    assert len(assessment.reasons) == 3
+
+    assert (
+        "behavior:HIGH_404_RATE:"
+        in assessment.reasons[1]
+    )
+
+    assert (
+        "behavior:DIRECTORY_SCANNING:"
+        in assessment.reasons[2]
+    )
+    
+
+def test_assess_risk_rejects_behavior_from_other_indicator():
+    results = [
+        ThreatIntelResult(
+            indicator="203.0.113.10",
+            provider="virustotal",
+            malicious=False,
+            score=20,
+            confidence=90,
+        )
+    ]
+
+    signals = [
+        BehaviorSignal(
+            source_ip="203.0.113.20",
+            signal_type=(
+                BehaviorSignalType.HIGH_404_RATE
+            ),
+            score=40,
+            event_count=10,
+            reason="10 HTTP 404 responses detected",
+        )
+    ]
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            "Behavior signals must belong "
+            "to the assessed indicator"
+        ),
+    ):
+        assess_risk(
+            results,
+            behavior_signals=signals,
+        )
+        
+    
+def test_assess_risk_behavior_score_is_capped_at_100():
+    results = [
+        ThreatIntelResult(
+            indicator="203.0.113.10",
+            provider="virustotal",
+            malicious=True,
+            score=90,
+            confidence=100,
+        )
+    ]
+
+    signals = [
+        BehaviorSignal(
+            source_ip="203.0.113.10",
+            signal_type=(
+                BehaviorSignalType.DIRECTORY_SCANNING
+            ),
+            score=100,
+            event_count=20,
+            reason="20 unique HTTP paths requested",
+        )
+    ]
+
+    assessment = assess_risk(
+        results,
+        behavior_signals=signals,
+    )
+
+    assert assessment.score == 100
+    assert assessment.severity == RiskSeverity.CRITICAL
+    
+
+def test_assess_risk_without_behavior_keeps_existing_score():
+    results = [
+        ThreatIntelResult(
+            indicator="203.0.113.10",
+            provider="virustotal",
+            malicious=True,
+            score=60,
+            confidence=90,
+        )
+    ]
+
+    assessment = assess_risk(
+        results
+    )
+
+    assert assessment.score == 60
+    assert assessment.severity == RiskSeverity.HIGH
+    
+
+def test_assess_lookup_result_supports_behavior_signals():
+    lookup = ThreatIntelLookupResult(
+        results=[
+            ThreatIntelResult(
+                indicator="203.0.113.10",
+                provider="virustotal",
+                malicious=True,
+                score=60,
+                confidence=90,
+            ),
+        ],
+        errors=[],
+    )
+
+    signals = [
+        BehaviorSignal(
+            source_ip="203.0.113.10",
+            signal_type=(
+                BehaviorSignalType.DIRECTORY_SCANNING
+            ),
+            score=70,
+            event_count=11,
+            reason="11 unique HTTP paths requested",
+        )
+    ]
+
+    assessment = assess_lookup_result(
+        lookup,
+        behavior_signals=signals,
+    )
+
+    assert assessment.score == 78
+    assert assessment.severity == RiskSeverity.CRITICAL
+    assert assessment.confidence == 90
+    
+
+def test_partial_lookup_keeps_behavior_score_and_reduces_ti_confidence():
+    lookup = ThreatIntelLookupResult(
+        results=[
+            ThreatIntelResult(
+                indicator="203.0.113.10",
+                provider="virustotal",
+                malicious=True,
+                score=60,
+                confidence=90,
+            ),
+        ],
+        errors=[
+            "abuseipdb: simulated failure",
+        ],
+    )
+
+    signals = [
+        BehaviorSignal(
+            source_ip="203.0.113.10",
+            signal_type=(
+                BehaviorSignalType.DIRECTORY_SCANNING
+            ),
+            score=70,
+            event_count=11,
+            reason="11 unique HTTP paths requested",
+        )
+    ]
+
+    assessment = assess_lookup_result(
+        lookup,
+        behavior_signals=signals,
+    )
+
+    assert assessment.score == 78
+    assert assessment.severity == RiskSeverity.CRITICAL
+    assert assessment.confidence == 45

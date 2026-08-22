@@ -1,7 +1,13 @@
+from sentinelflow.models.behavior import BehaviorSignal
 from sentinelflow.models.risk import RiskAssessment
 from sentinelflow.models.risk_policy import RiskPolicy
 from sentinelflow.models.threat_intel import ThreatIntelResult
 from sentinelflow.models.threat_intel_lookup import ThreatIntelLookupResult
+from sentinelflow.risk.behavior import (
+    build_behavior_reasons,
+    calculate_behavior_uplift,
+    validate_behavior_signals_for_indicator,
+)
 from sentinelflow.risk.reasons import build_risk_reasons
 from sentinelflow.risk.scoring import (
     calculate_risk_confidence,
@@ -68,6 +74,7 @@ def _calculate_lookup_coverage(
 def assess_risk(
     results: list[ThreatIntelResult],
     policy: RiskPolicy | None = None,
+    behavior_signals: list[BehaviorSignal] | None = None,
 ) -> RiskAssessment:
     active_policy = (
         policy
@@ -75,9 +82,31 @@ def assess_risk(
         else RiskPolicy()
     )
 
-    risk_score = calculate_weighted_risk_score(
+    active_behavior_signals = (
+        behavior_signals
+        if behavior_signals is not None
+        else []
+    )
+
+    base_risk_score = calculate_weighted_risk_score(
         results,
         policy=active_policy,
+    )
+
+    indicator = results[0].indicator.strip()
+
+    validate_behavior_signals_for_indicator(
+        indicator,
+        active_behavior_signals,
+    )
+
+    behavior_uplift = calculate_behavior_uplift(
+        active_behavior_signals
+    )
+
+    risk_score = min(
+        base_risk_score + behavior_uplift,
+        100,
     )
 
     confidence = calculate_risk_confidence(
@@ -89,11 +118,12 @@ def assess_risk(
         policy=active_policy,
     )
 
-    reasons = build_risk_reasons(
-        results
+    reasons = (
+        build_risk_reasons(results)
+        + build_behavior_reasons(
+            active_behavior_signals
+        )
     )
-
-    indicator = results[0].indicator.strip()
 
     return RiskAssessment(
         indicator=indicator,
@@ -107,6 +137,7 @@ def assess_risk(
 def assess_lookup_result(
     lookup_result: ThreatIntelLookupResult,
     policy: RiskPolicy | None = None,
+    behavior_signals: list[BehaviorSignal] | None = None,
 ) -> RiskAssessment:
     if not lookup_result.results:
         raise ValueError(
@@ -122,6 +153,7 @@ def assess_lookup_result(
     assessment = assess_risk(
         lookup_result.results,
         policy=active_policy,
+        behavior_signals=behavior_signals,
     )
 
     if not lookup_result.errors:
