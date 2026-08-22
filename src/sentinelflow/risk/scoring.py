@@ -1,3 +1,4 @@
+from sentinelflow.models.risk_policy import RiskPolicy
 from sentinelflow.models.threat_intel import ThreatIntelResult
 
 
@@ -62,27 +63,51 @@ def calculate_base_risk_score(
 
 def calculate_weighted_risk_score(
     results: list[ThreatIntelResult],
+    policy: RiskPolicy | None = None,
 ) -> int:
     _validate_results(results)
 
-    total_confidence = sum(
-        result.confidence
-        for result in results
+    active_policy = (
+        policy
+        if policy is not None
+        else RiskPolicy()
     )
 
-    if total_confidence == 0:
-        return calculate_base_risk_score(results)
+    weighted_score_total = 0.0
+    total_weight = 0.0
 
-    weighted_score = sum(
-        result.score * result.confidence
-        for result in results
-    )
+    for result in results:
+        provider_weight = (
+            active_policy.get_provider_weight(
+                result.provider
+            )
+        )
+
+        effective_weight = (
+            result.confidence
+            * provider_weight
+        )
+
+        weighted_score_total += (
+            result.score
+            * effective_weight
+        )
+
+        total_weight += effective_weight
+
+    if total_weight == 0:
+        return calculate_base_risk_score(
+            results
+        )
 
     weighted_average = (
-        weighted_score / total_confidence
+        weighted_score_total
+        / total_weight
     )
 
-    return _round_half_up(weighted_average)
+    return _round_half_up(
+        weighted_average
+    )
 
 
 def calculate_risk_confidence(

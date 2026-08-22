@@ -1,4 +1,5 @@
 from sentinelflow.models.risk import RiskAssessment
+from sentinelflow.models.risk_policy import RiskPolicy
 from sentinelflow.models.threat_intel import ThreatIntelResult
 from sentinelflow.models.threat_intel_lookup import ThreatIntelLookupResult
 from sentinelflow.risk.reasons import build_risk_reasons
@@ -9,11 +10,74 @@ from sentinelflow.risk.scoring import (
 from sentinelflow.risk.severity import severity_from_score
 
 
+def _extract_provider_name_from_error(
+    error: str,
+) -> str | None:
+    provider_name = error.partition(":")[0].strip()
+
+    if not provider_name:
+        return None
+
+    return provider_name
+
+
+def _calculate_lookup_coverage(
+    lookup_result: ThreatIntelLookupResult,
+    policy: RiskPolicy,
+) -> float:
+    successful_weight = sum(
+        policy.get_provider_weight(
+            result.provider
+        )
+        for result in lookup_result.results
+    )
+
+    failed_weight = 0.0
+
+    for error in lookup_result.errors:
+        provider_name = (
+            _extract_provider_name_from_error(
+                error
+            )
+        )
+
+        if provider_name is None:
+            failed_weight += 1.0
+            continue
+
+        failed_weight += (
+            policy.get_provider_weight(
+                provider_name
+            )
+        )
+
+    total_weight = (
+        successful_weight
+        + failed_weight
+    )
+
+    if total_weight == 0:
+        return 0.0
+
+    return (
+        successful_weight
+        / total_weight
+    )
+
+
 def assess_risk(
     results: list[ThreatIntelResult],
+    policy: RiskPolicy | None = None,
 ) -> RiskAssessment:
+    active_policy = (
+        policy
+        if policy is not None
+        else RiskPolicy()
+    )
+
     risk_score = calculate_weighted_risk_score(
-        results
+        results,
+        policy=active_policy,
     )
 
     confidence = calculate_risk_confidence(
@@ -21,7 +85,8 @@ def assess_risk(
     )
 
     severity = severity_from_score(
-        risk_score
+        risk_score,
+        policy=active_policy,
     )
 
     reasons = build_risk_reasons(
@@ -41,27 +106,30 @@ def assess_risk(
 
 def assess_lookup_result(
     lookup_result: ThreatIntelLookupResult,
+    policy: RiskPolicy | None = None,
 ) -> RiskAssessment:
     if not lookup_result.results:
         raise ValueError(
             "Cannot assess risk without Threat Intelligence results"
         )
 
+    active_policy = (
+        policy
+        if policy is not None
+        else RiskPolicy()
+    )
+
     assessment = assess_risk(
-        lookup_result.results
+        lookup_result.results,
+        policy=active_policy,
     )
 
     if not lookup_result.errors:
         return assessment
 
-    total_providers = (
-        len(lookup_result.results)
-        + len(lookup_result.errors)
-    )
-
-    coverage = (
-        len(lookup_result.results)
-        / total_providers
+    coverage = _calculate_lookup_coverage(
+        lookup_result,
+        active_policy,
     )
 
     adjusted_confidence = int(

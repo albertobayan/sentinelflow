@@ -1,5 +1,6 @@
 import pytest
 
+from sentinelflow.models.risk_policy import RiskPolicy
 from sentinelflow.models.threat_intel import ThreatIntelResult
 from sentinelflow.risk.scoring import (
     calculate_base_risk_score,
@@ -540,3 +541,256 @@ def test_risk_confidence_rounds_half_up():
     assert calculate_risk_confidence(results) == 51
     
 
+def test_weighted_risk_score_default_policy_keeps_equal_provider_weights():
+    results = [
+        create_result(
+            provider="virustotal",
+            score=20,
+            confidence=100,
+        ),
+        create_result(
+            provider="abuseipdb",
+            score=80,
+            confidence=100,
+        ),
+    ]
+
+    policy = RiskPolicy()
+
+    assert calculate_weighted_risk_score(
+        results,
+        policy=policy,
+    ) == 50
+    
+
+def test_weighted_risk_score_uses_provider_weights():
+    results = [
+        create_result(
+            provider="virustotal",
+            score=80,
+            confidence=90,
+        ),
+        create_result(
+            provider="abuseipdb",
+            score=60,
+            confidence=100,
+        ),
+    ]
+
+    policy = RiskPolicy(
+        provider_weights={
+            "virustotal": 1.2,
+            "abuseipdb": 0.8,
+        }
+    )
+
+    assert calculate_weighted_risk_score(
+        results,
+        policy=policy,
+    ) == 71
+    
+
+def test_higher_provider_weight_increases_provider_influence():
+    results = [
+        create_result(
+            provider="provider-a",
+            score=100,
+            confidence=100,
+        ),
+        create_result(
+            provider="provider-b",
+            score=0,
+            confidence=100,
+        ),
+    ]
+
+    policy = RiskPolicy(
+        provider_weights={
+            "provider-a": 2.0,
+            "provider-b": 1.0,
+        }
+    )
+
+    assert calculate_weighted_risk_score(
+        results,
+        policy=policy,
+    ) == 67
+    
+
+def test_lower_provider_weight_reduces_provider_influence():
+    results = [
+        create_result(
+            provider="provider-a",
+            score=100,
+            confidence=100,
+        ),
+        create_result(
+            provider="provider-b",
+            score=0,
+            confidence=100,
+        ),
+    ]
+
+    policy = RiskPolicy(
+        provider_weights={
+            "provider-a": 0.5,
+            "provider-b": 1.0,
+        }
+    )
+
+    assert calculate_weighted_risk_score(
+        results,
+        policy=policy,
+    ) == 33
+    
+
+def test_unconfigured_provider_uses_default_weight():
+    results = [
+        create_result(
+            provider="unknown-provider",
+            score=80,
+            confidence=100,
+        ),
+        create_result(
+            provider="abuseipdb",
+            score=20,
+            confidence=100,
+        ),
+    ]
+
+    policy = RiskPolicy(
+        provider_weights={
+            "abuseipdb": 1.0,
+        }
+    )
+
+    assert calculate_weighted_risk_score(
+        results,
+        policy=policy,
+    ) == 50
+    
+
+def test_provider_weight_lookup_is_case_insensitive():
+    results = [
+        create_result(
+            provider="VirusTotal",
+            score=100,
+            confidence=100,
+        ),
+        create_result(
+            provider="abuseipdb",
+            score=0,
+            confidence=100,
+        ),
+    ]
+
+    policy = RiskPolicy(
+        provider_weights={
+            "virustotal": 2.0,
+            "abuseipdb": 1.0,
+        }
+    )
+
+    assert calculate_weighted_risk_score(
+        results,
+        policy=policy,
+    ) == 67
+    
+
+def test_provider_weight_lookup_normalizes_whitespace():
+    results = [
+        create_result(
+            provider="   virustotal   ",
+            score=100,
+            confidence=100,
+        ),
+        create_result(
+            provider="abuseipdb",
+            score=0,
+            confidence=100,
+        ),
+    ]
+
+    policy = RiskPolicy(
+        provider_weights={
+            "virustotal": 2.0,
+            "abuseipdb": 1.0,
+        }
+    )
+
+    assert calculate_weighted_risk_score(
+        results,
+        policy=policy,
+    ) == 67
+    
+
+def test_provider_weight_and_confidence_are_both_applied():
+    results = [
+        create_result(
+            provider="provider-a",
+            score=100,
+            confidence=10,
+        ),
+        create_result(
+            provider="provider-b",
+            score=0,
+            confidence=100,
+        ),
+    ]
+
+    policy = RiskPolicy(
+        provider_weights={
+            "provider-a": 2.0,
+            "provider-b": 1.0,
+        }
+    )
+
+    assert calculate_weighted_risk_score(
+        results,
+        policy=policy,
+    ) == 17
+    
+
+def test_provider_weights_do_not_break_zero_confidence_fallback():
+    results = [
+        create_result(
+            provider="provider-a",
+            score=80,
+            confidence=0,
+        ),
+        create_result(
+            provider="provider-b",
+            score=20,
+            confidence=0,
+        ),
+    ]
+
+    policy = RiskPolicy(
+        provider_weights={
+            "provider-a": 2.0,
+            "provider-b": 0.5,
+        }
+    )
+
+    assert calculate_weighted_risk_score(
+        results,
+        policy=policy,
+    ) == 50
+    
+
+def test_weighted_risk_score_rejects_empty_provider_name():
+    results = [
+        ThreatIntelResult(
+            indicator="9.9.9.9",
+            provider="   ",
+            malicious=False,
+            score=20,
+            confidence=90,
+        )
+    ]
+
+    with pytest.raises(
+        ValueError,
+        match="Provider name cannot be empty",
+    ):
+        calculate_weighted_risk_score(results)

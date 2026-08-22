@@ -1,6 +1,7 @@
 import pytest
 
 from sentinelflow.models.risk import RiskSeverity
+from sentinelflow.models.risk_policy import RiskPolicy
 from sentinelflow.risk.severity import severity_from_score
 
 
@@ -74,3 +75,90 @@ def test_severity_rejects_boolean_score():
         match="Risk score must be an integer",
     ):
         severity_from_score(True)
+        
+
+def test_severity_uses_custom_policy():
+    policy = RiskPolicy(
+        medium_threshold=20,
+        high_threshold=40,
+        critical_threshold=80,
+    )
+
+    assert severity_from_score(
+        45,
+        policy=policy,
+    ) == RiskSeverity.HIGH
+    
+    
+def test_custom_policy_medium_boundary():
+    policy = RiskPolicy(
+        medium_threshold=20,
+        high_threshold=40,
+        critical_threshold=80,
+    )
+
+    assert severity_from_score(
+        19,
+        policy=policy,
+    ) == RiskSeverity.LOW
+
+    assert severity_from_score(
+        20,
+        policy=policy,
+    ) == RiskSeverity.MEDIUM
+    
+
+def test_custom_policy_high_boundary():
+    policy = RiskPolicy(
+        medium_threshold=20,
+        high_threshold=40,
+        critical_threshold=80,
+    )
+
+    assert severity_from_score(
+        39,
+        policy=policy,
+    ) == RiskSeverity.MEDIUM
+
+    assert severity_from_score(
+        40,
+        policy=policy,
+    ) == RiskSeverity.HIGH
+    
+
+def test_custom_policy_critical_boundary():
+    policy = RiskPolicy(
+        medium_threshold=20,
+        high_threshold=40,
+        critical_threshold=80,
+    )
+
+    assert severity_from_score(
+        79,
+        policy=policy,
+    ) == RiskSeverity.HIGH
+
+    assert severity_from_score(
+        80,
+        policy=policy,
+    ) == RiskSeverity.CRITICAL
+    
+
+def test_custom_policy_supports_score_extremes():
+    policy = RiskPolicy(
+        medium_threshold=10,
+        high_threshold=30,
+        critical_threshold=90,
+    )
+
+    assert severity_from_score(
+        0,
+        policy=policy,
+    ) == RiskSeverity.LOW
+
+    assert severity_from_score(
+        100,
+        policy=policy,
+    ) == RiskSeverity.CRITICAL
+    
+

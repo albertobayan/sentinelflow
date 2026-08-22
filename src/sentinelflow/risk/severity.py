@@ -1,7 +1,11 @@
 from sentinelflow.models.risk import RiskSeverity
+from sentinelflow.models.risk_policy import RiskPolicy
 
 
-def severity_from_score(score: int) -> RiskSeverity:
+def severity_from_score(
+    score: int,
+    policy: RiskPolicy | None = None,
+) -> RiskSeverity:
     if type(score) is not int:
         raise TypeError(
             "Risk score must be an integer"
@@ -12,13 +16,19 @@ def severity_from_score(score: int) -> RiskSeverity:
             "Risk score must be between 0 and 100"
         )
 
-    if score >= 75:
+    active_policy = (
+        policy
+        if policy is not None
+        else RiskPolicy()
+    )
+
+    if score >= active_policy.critical_threshold:
         return RiskSeverity.CRITICAL
 
-    if score >= 50:
+    if score >= active_policy.high_threshold:
         return RiskSeverity.HIGH
 
-    if score >= 25:
+    if score >= active_policy.medium_threshold:
         return RiskSeverity.MEDIUM
 
     return RiskSeverity.LOW

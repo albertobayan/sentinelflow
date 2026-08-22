@@ -1,12 +1,13 @@
 import pytest
 
 from sentinelflow.models.risk import RiskSeverity
+from sentinelflow.models.risk_policy import RiskPolicy
 from sentinelflow.models.threat_intel import ThreatIntelResult
+from sentinelflow.models.threat_intel_lookup import ThreatIntelLookupResult
 from sentinelflow.risk.engine import (
     assess_lookup_result,
     assess_risk,
 )
-from sentinelflow.models.threat_intel_lookup import ThreatIntelLookupResult
 
 
 def test_assess_risk_builds_complete_assessment():
@@ -340,3 +341,423 @@ def test_assess_lookup_result_rejects_empty_lookup():
         assess_lookup_result(lookup)
         
 
+def test_assess_risk_uses_provider_weights_from_policy():
+    results = [
+        ThreatIntelResult(
+            indicator="9.9.9.9",
+            provider="virustotal",
+            malicious=True,
+            score=80,
+            confidence=90,
+        ),
+        ThreatIntelResult(
+            indicator="9.9.9.9",
+            provider="abuseipdb",
+            malicious=True,
+            score=60,
+            confidence=100,
+        ),
+    ]
+
+    policy = RiskPolicy(
+        provider_weights={
+            "virustotal": 1.2,
+            "abuseipdb": 0.8,
+        }
+    )
+
+    assessment = assess_risk(
+        results,
+        policy=policy,
+    )
+
+    assert assessment.score == 71
+    
+
+def test_assess_risk_uses_provider_weights_from_policy():
+    results = [
+        ThreatIntelResult(
+            indicator="9.9.9.9",
+            provider="virustotal",
+            malicious=True,
+            score=80,
+            confidence=90,
+        ),
+        ThreatIntelResult(
+            indicator="9.9.9.9",
+            provider="abuseipdb",
+            malicious=True,
+            score=60,
+            confidence=100,
+        ),
+    ]
+
+    policy = RiskPolicy(
+        provider_weights={
+            "virustotal": 1.2,
+            "abuseipdb": 0.8,
+        }
+    )
+
+    assessment = assess_risk(
+        results,
+        policy=policy,
+    )
+
+    assert assessment.score == 71
+    
+
+def test_assess_risk_uses_same_policy_for_scoring_and_severity():
+    results = [
+        ThreatIntelResult(
+            indicator="9.9.9.9",
+            provider="virustotal",
+            malicious=True,
+            score=80,
+            confidence=90,
+        ),
+        ThreatIntelResult(
+            indicator="9.9.9.9",
+            provider="abuseipdb",
+            malicious=True,
+            score=60,
+            confidence=100,
+        ),
+    ]
+
+    policy = RiskPolicy(
+        medium_threshold=20,
+        high_threshold=40,
+        critical_threshold=70,
+        provider_weights={
+            "virustotal": 1.2,
+            "abuseipdb": 0.8,
+        },
+    )
+
+    assessment = assess_risk(
+        results,
+        policy=policy,
+    )
+
+    assert assessment.score == 71
+    assert assessment.severity == RiskSeverity.CRITICAL
+    
+
+def test_assess_risk_without_policy_keeps_default_behavior():
+    results = [
+        ThreatIntelResult(
+            indicator="9.9.9.9",
+            provider="virustotal",
+            malicious=True,
+            score=70,
+            confidence=100,
+        )
+    ]
+
+    assessment = assess_risk(
+        results
+    )
+
+    assert assessment.score == 70
+    assert assessment.severity == RiskSeverity.HIGH
+
+
+def test_assess_lookup_result_uses_custom_policy():
+    lookup = ThreatIntelLookupResult(
+        results=[
+            ThreatIntelResult(
+                indicator="9.9.9.9",
+                provider="virustotal",
+                malicious=True,
+                score=80,
+                confidence=90,
+            ),
+            ThreatIntelResult(
+                indicator="9.9.9.9",
+                provider="abuseipdb",
+                malicious=True,
+                score=60,
+                confidence=100,
+            ),
+        ],
+        errors=[],
+    )
+
+    policy = RiskPolicy(
+        medium_threshold=20,
+        high_threshold=40,
+        critical_threshold=70,
+        provider_weights={
+            "virustotal": 1.2,
+            "abuseipdb": 0.8,
+        },
+    )
+
+    assessment = assess_lookup_result(
+        lookup,
+        policy=policy,
+    )
+
+    assert assessment.score == 71
+    assert assessment.severity == RiskSeverity.CRITICAL
+    assert assessment.confidence == 95
+    
+
+def test_partial_lookup_uses_weighted_provider_coverage():
+    lookup = ThreatIntelLookupResult(
+        results=[
+            ThreatIntelResult(
+                indicator="9.9.9.9",
+                provider="virustotal",
+                malicious=True,
+                score=70,
+                confidence=90,
+            ),
+        ],
+        errors=[
+            "abuseipdb: simulated failure",
+        ],
+    )
+
+    policy = RiskPolicy(
+        medium_threshold=20,
+        high_threshold=40,
+        critical_threshold=70,
+        provider_weights={
+            "virustotal": 2.0,
+            "abuseipdb": 1.0,
+        },
+    )
+
+    assessment = assess_lookup_result(
+        lookup,
+        policy=policy,
+    )
+
+    assert assessment.score == 70
+    assert assessment.severity == RiskSeverity.CRITICAL
+    assert assessment.confidence == 60
+    
+
+def test_partial_lookup_higher_weight_success_gives_more_coverage():
+    lookup = ThreatIntelLookupResult(
+        results=[
+            ThreatIntelResult(
+                indicator="9.9.9.9",
+                provider="provider-a",
+                malicious=True,
+                score=70,
+                confidence=90,
+            ),
+        ],
+        errors=[
+            "provider-b: simulated failure",
+        ],
+    )
+
+    policy = RiskPolicy(
+        provider_weights={
+            "provider-a": 2.0,
+            "provider-b": 1.0,
+        }
+    )
+
+    assessment = assess_lookup_result(
+        lookup,
+        policy=policy,
+    )
+
+    assert assessment.confidence == 60
+    
+
+def test_partial_lookup_higher_weight_failure_reduces_coverage_more():
+    lookup = ThreatIntelLookupResult(
+        results=[
+            ThreatIntelResult(
+                indicator="9.9.9.9",
+                provider="provider-b",
+                malicious=True,
+                score=70,
+                confidence=90,
+            ),
+        ],
+        errors=[
+            "provider-a: simulated failure",
+        ],
+    )
+
+    policy = RiskPolicy(
+        provider_weights={
+            "provider-a": 2.0,
+            "provider-b": 1.0,
+        }
+    )
+
+    assessment = assess_lookup_result(
+        lookup,
+        policy=policy,
+    )
+
+    assert assessment.confidence == 30
+    
+
+def test_partial_lookup_equal_provider_weights_keep_half_coverage():
+    lookup = ThreatIntelLookupResult(
+        results=[
+            ThreatIntelResult(
+                indicator="9.9.9.9",
+                provider="provider-a",
+                malicious=False,
+                score=20,
+                confidence=80,
+            ),
+        ],
+        errors=[
+            "provider-b: simulated failure",
+        ],
+    )
+
+    policy = RiskPolicy(
+        provider_weights={
+            "provider-a": 1.0,
+            "provider-b": 1.0,
+        }
+    )
+
+    assessment = assess_lookup_result(
+        lookup,
+        policy=policy,
+    )
+
+    assert assessment.confidence == 40
+    
+
+def test_partial_lookup_unconfigured_failed_provider_uses_default_weight():
+    lookup = ThreatIntelLookupResult(
+        results=[
+            ThreatIntelResult(
+                indicator="9.9.9.9",
+                provider="virustotal",
+                malicious=True,
+                score=70,
+                confidence=90,
+            ),
+        ],
+        errors=[
+            "unknown-provider: simulated failure",
+        ],
+    )
+
+    policy = RiskPolicy(
+        provider_weights={
+            "virustotal": 2.0,
+        }
+    )
+
+    assessment = assess_lookup_result(
+        lookup,
+        policy=policy,
+    )
+
+    assert assessment.confidence == 60
+    
+
+def test_partial_lookup_provider_weights_are_case_insensitive():
+    lookup = ThreatIntelLookupResult(
+        results=[
+            ThreatIntelResult(
+                indicator="9.9.9.9",
+                provider="VirusTotal",
+                malicious=True,
+                score=70,
+                confidence=90,
+            ),
+        ],
+        errors=[
+            "ABUSEIPDB: simulated failure",
+        ],
+    )
+
+    policy = RiskPolicy(
+        provider_weights={
+            "virustotal": 2.0,
+            "abuseipdb": 1.0,
+        }
+    )
+
+    assessment = assess_lookup_result(
+        lookup,
+        policy=policy,
+    )
+
+    assert assessment.confidence == 60
+    
+
+def test_partial_lookup_unknown_error_uses_neutral_failure_weight():
+    lookup = ThreatIntelLookupResult(
+        results=[
+            ThreatIntelResult(
+                indicator="9.9.9.9",
+                provider="virustotal",
+                malicious=True,
+                score=70,
+                confidence=90,
+            ),
+        ],
+        errors=[
+            "",
+        ],
+    )
+
+    policy = RiskPolicy(
+        provider_weights={
+            "virustotal": 2.0,
+        }
+    )
+
+    assessment = assess_lookup_result(
+        lookup,
+        policy=policy,
+    )
+
+    assert assessment.confidence == 60
+    
+
+def test_partial_lookup_coverage_supports_multiple_successful_providers():
+    lookup = ThreatIntelLookupResult(
+        results=[
+            ThreatIntelResult(
+                indicator="9.9.9.9",
+                provider="provider-a",
+                malicious=True,
+                score=80,
+                confidence=90,
+            ),
+            ThreatIntelResult(
+                indicator="9.9.9.9",
+                provider="provider-b",
+                malicious=False,
+                score=20,
+                confidence=90,
+            ),
+        ],
+        errors=[
+            "provider-c: simulated failure",
+        ],
+    )
+
+    policy = RiskPolicy(
+        provider_weights={
+            "provider-a": 2.0,
+            "provider-b": 1.0,
+            "provider-c": 1.0,
+        }
+    )
+
+    assessment = assess_lookup_result(
+        lookup,
+        policy=policy,
+    )
+
+    assert assessment.confidence == 68
